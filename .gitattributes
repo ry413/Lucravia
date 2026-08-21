@@ -1,0 +1,8 @@
+* text=auto
+
+# Keep platform launchers usable after cloning on either Windows or Unix.
+*.bat text eol=crlf
+/android/gradlew text eol=lf
+
+*.jar binary
+*.png binary
