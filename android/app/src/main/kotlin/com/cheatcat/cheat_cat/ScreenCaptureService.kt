@@ -107,7 +107,7 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP -> stopAnalysis("屏幕分析已停止")
+            ACTION_STOP -> stopAnalysis("订单分析已停止")
             ACTION_START -> startAnalysis(intent)
         }
         return START_NOT_STICKY
@@ -122,7 +122,7 @@ class ScreenCaptureService : Service() {
 
         val serverUrl = intent.getStringExtra(EXTRA_VLM_SERVER_URL)?.trim().orEmpty()
         if (serverUrl.isEmpty()) {
-            stopAnalysis("缺少局域网 VLM 服务地址")
+            stopAnalysis("当前版本未连接分析服务")
             return
         }
         val driverLatitude = intent.getDoubleExtra(EXTRA_DRIVER_LATITUDE, Double.NaN)
@@ -135,7 +135,7 @@ class ScreenCaptureService : Service() {
         this.driverLongitude = driverLongitude
         val sharedSecret = BuildConfig.SHARED_SECRET.trim()
         if (sharedSecret.length < 32) {
-            stopAnalysis("缺少客户端共享密钥")
+            stopAnalysis("当前版本未连接分析服务")
             return
         }
         vlmClient = VlmServerClient(serverUrl, sharedSecret)
@@ -198,11 +198,11 @@ class ScreenCaptureService : Service() {
             prepareOverlays()
             val event = mapOf<String, Any>(
                 "status" to "scanning",
-                "message" to "等待订单画面稳定后调用 VLM",
+                "message" to "等待订单画面停稳",
             )
             AnalyzerEventBus.emit(event)
         } catch (error: Exception) {
-            stopAnalysis("无法启动屏幕分析：${error.message}")
+            stopAnalysis("无法启动订单分析：${error.message}")
         }
     }
 
@@ -255,7 +255,7 @@ class ScreenCaptureService : Service() {
                 cancelInFlightAnalysis()
                 stableFrameGate.reset()
                 inFlightChangeDetector.reset()
-                val message = "请求期间画面已变化，已取消旧分析并等待新画面稳定"
+                val message = "画面已变化，正在等待新订单停稳"
                 AnalyzerEventBus.emit(mapOf("status" to "scanning", "message" to message))
                 updateStatus("画面已变化 · 已取消旧分析")
             }
@@ -281,9 +281,9 @@ class ScreenCaptureService : Service() {
         vlmBusy = true
         inFlightScreenChanged = false
         inFlightChangeDetector.accept(frameSignature)
-        val pendingMessage = "发现稳定的新画面，正在请求局域网 VLM 服务…"
+        val pendingMessage = "发现新订单，正在分析路线和时间成本…"
         AnalyzerEventBus.emit(mapOf("status" to "scanning", "message" to pendingMessage))
-        updateStatus("识别中 · VLM + 高德")
+        updateStatus("分析中 · 正在计算路线")
         networkExecutor.execute {
             try {
                 val result = call.execute()
@@ -294,7 +294,7 @@ class ScreenCaptureService : Service() {
                     is VlmServerClient.Result.Success -> {
                         if (!isRunning) return@execute
                         if (inFlightScreenChanged) {
-                            val message = "请求期间画面已变化，已丢弃过期结果"
+                            val message = "画面已变化，已忽略上一页结果"
                             AnalyzerEventBus.emit(
                                 mapOf("status" to "scanning", "message" to message),
                             )
@@ -305,9 +305,9 @@ class ScreenCaptureService : Service() {
                         val best = analysis.bestOrder
                         if (best == null) {
                             val message = if (analysis.orders.isEmpty()) {
-                                "VLM 未发现订单"
+                                "没有发现可分析的订单"
                             } else {
-                                "VLM 看到 ${analysis.orders.size} 张卡片，但没有字段完整的订单"
+                                "发现 ${analysis.orders.size} 张订单卡片，但关键信息显示不完整"
                             }
                             AnalyzerEventBus.emit(
                                 mapOf("status" to "scanning", "message" to message),
@@ -321,7 +321,7 @@ class ScreenCaptureService : Service() {
                             )
                         } else {
                             val count = analysis.completeOrders.size
-                            val message = "本屏识别到 $count 张完整订单，已按高德有效时薪排序"
+                            val message = "本次发现 $count 个完整订单，已按预计毛时薪排序"
                             AnalyzerEventBus.emit(analysis.toEvent(message))
                             updateStatus("已识别 $count 单 · 已标注")
                             showOrderHighlights(analysis, frameSignature)
@@ -333,7 +333,7 @@ class ScreenCaptureService : Service() {
                             SystemClock.elapsedRealtime(),
                         )
                         if (!isRunning) return@execute
-                        val message = "VLM 请求失败：${result.message}，稍后重试"
+                        val message = "分析服务暂时不可用：${result.message}，稍后会自动重试"
                         AnalyzerEventBus.emit(
                             mapOf("status" to "scanning", "message" to message),
                         )
@@ -507,8 +507,8 @@ class ScreenCaptureService : Service() {
         }
         val notification = builder
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("跑单助手正在等待稳定订单画面")
-            .setContentText("新画面将发送到局域网 VLM 服务")
+            .setContentTitle("跑单助手正在留意新订单")
+            .setContentText("订单画面停稳后会自动分析")
             .setContentIntent(openPendingIntent)
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
@@ -533,7 +533,7 @@ class ScreenCaptureService : Service() {
         manager.createNotificationChannel(
             NotificationChannel(
                 NOTIFICATION_CHANNEL,
-                "屏幕订单分析",
+                "订单分析",
                 NotificationManager.IMPORTANCE_LOW,
             ),
         )
@@ -579,7 +579,7 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onDestroy() {
-        if (!stopping) stopAnalysis("屏幕分析已结束")
+        if (!stopping) stopAnalysis("订单分析已结束")
         networkExecutor.shutdownNow()
         captureThread.quitSafely()
         super.onDestroy()

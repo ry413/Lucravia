@@ -34,7 +34,7 @@ class ScanRegionCalibrationController(
             }
         }
         val start = TextView(context).apply {
-            text = "开始校准"
+            text = "选择订单区域"
             setTextColor(Color.WHITE)
             textSize = 15f
             gravity = Gravity.CENTER

@@ -117,7 +117,7 @@ class VlmServerClient(serverUrl: String, private val sharedSecret: String) {
                 if (isCancelled) {
                     Result.Cancelled
                 } else {
-                    Result.Failure(error.localizedMessage ?: "局域网服务请求失败")
+                    Result.Failure(error.localizedMessage ?: "无法连接分析服务")
                 }
             } finally {
                 connection = null
@@ -169,6 +169,6 @@ class VlmServerClient(serverUrl: String, private val sharedSecret: String) {
         } catch (_: Exception) {
             null
         }
-        return "VLM 服务 HTTP $status${detail?.let { "：$it" } ?: ""}"
+        return "分析服务 HTTP $status${detail?.let { "：$it" } ?: ""}"
     }
 }

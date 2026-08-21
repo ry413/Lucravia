@@ -6,7 +6,7 @@
 
 ## Flutter layer
 
-- `AnalyzerHomeScreen` 显示局域网服务地址、权限、持久化扫描区域、启停分析和最近一次结果，不接触 DashScope Key。
+- `AnalyzerHomeScreen` 显示用户可理解的运行状态、悬浮窗/位置权限、持久化订单区域、启停分析和最近一次结果。编译期服务配置正常时不显示 VLM、局域网、`.env` 等开发细节；配置缺失时只显示更新应用的用户提示。
 - `ScreenAnalyzerPlatform` 封装 MethodChannel 和 EventChannel，避免 UI 了解 Android Intent 或 Service。
 
 ## Android layer

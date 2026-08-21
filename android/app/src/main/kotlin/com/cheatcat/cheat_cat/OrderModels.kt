@@ -103,7 +103,7 @@ data class ParsedOrder(
         estimatedHourlyIncome?.let { put("estimatedHourlyIncome", it) }
     }
 
-    fun toEvent(message: String = "VLM 已识别当前稳定画面"): Map<String, Any> = buildMap {
+    fun toEvent(message: String = "已分析当前订单画面"): Map<String, Any> = buildMap {
         put("status", "scanning")
         put("rawText", rawText)
         price?.let { put("price", it) }

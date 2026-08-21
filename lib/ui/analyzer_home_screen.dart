@@ -84,9 +84,7 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
 
   Future<void> _start() async {
     if (!_vlmServerConfigured) {
-      _showError(
-        '请在工程根目录 .env 配置 VLM_SERVER_URL 和 SHARED_SECRET 后重新构建',
-      );
+      _showError('当前版本未连接分析服务，请联系提供者更新应用');
       return;
     }
     if (!_overlayGranted) {
@@ -157,21 +155,14 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
               _OrdersCard(orders: _snapshot.orders),
             ],
             const SizedBox(height: 20),
+            if (!_vlmServerConfigured) ...[
+              const _ServiceWarning(),
+              const SizedBox(height: 12),
+            ],
             _PermissionStep(
               number: '1',
-              title: '局域网 VLM 服务',
-              description: _vlmServerConfigured
-                  ? '已从工程根目录 .env 编译服务地址和请求签名密钥。'
-                  : '未配置 VLM_SERVER_URL 或 SHARED_SECRET；写入 .env 后需要重新构建 APK。',
-              complete: _vlmServerConfigured,
-              actionLabel: '检查 .env',
-              onPressed: null,
-            ),
-            const SizedBox(height: 12),
-            _PermissionStep(
-              number: '2',
-              title: '允许悬浮结果窗',
-              description: '在对应订单卡片上显示排行和实际有效时薪。',
+              title: '开启悬浮提示',
+              description: '将订单评价直接标在对应卡片上。',
               complete: _overlayGranted,
               actionLabel: '去授权',
               onPressed: _overlayGranted
@@ -180,9 +171,9 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
             ),
             const SizedBox(height: 12),
             _PermissionStep(
-              number: '3',
-              title: '允许获取当前位置',
-              description: '用于计算当前位置到上车点的实时接驾路线；分析期间持续更新。',
+              number: '2',
+              title: '开启位置服务',
+              description: '用当前位置估算真实接驾路线和耗时。',
               complete: _locationGranted,
               actionLabel: '去授权',
               onPressed: _locationGranted
@@ -191,13 +182,13 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
             ),
             const SizedBox(height: 12),
             _PermissionStep(
-              number: '4',
-              title: '校准识图区域',
+              number: '3',
+              title: '选择订单区域',
               description: _scanRegionConfigured
-                  ? '当前识别屏幕纵向 ${(_scanTopRatio * 100).round()}%–${(_scanBottomRatio * 100).round()}%；在目标页面点校准悬浮按钮可调整。'
-                  : '点击后先打开目标页面，再点校准悬浮按钮拖动上下边界。',
+                  ? '已选择屏幕纵向 ${(_scanTopRatio * 100).round()}%–${(_scanBottomRatio * 100).round()}% 的区域。'
+                  : '在订单页拖动上下边界，只分析有订单的区域。',
               complete: _scanRegionConfigured,
-              actionLabel: _scanRegionConfigured ? '重新校准' : '去校准',
+              actionLabel: _scanRegionConfigured ? '重新选择' : '去选择',
               showActionWhenComplete: true,
               onPressed: _overlayGranted && !_running && !_busy
                   ? _calibrateScanRegion
@@ -205,9 +196,9 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
             ),
             const SizedBox(height: 12),
             _PermissionStep(
-              number: '5',
-              title: '开始屏幕分析',
-              description: 'Android 会弹出录屏授权；每次会话都需要确认。',
+              number: '4',
+              title: '开始订单分析',
+              description: '确认系统的屏幕共享提示后，切换到司机端即可使用。',
               complete: _running,
               actionLabel: _running ? '分析中' : '开始',
               onPressed:
@@ -222,7 +213,7 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
                   ? OutlinedButton.icon(
                       onPressed: _busy ? null : _stop,
                       icon: const Icon(Icons.stop_circle_outlined),
-                      label: const Text('停止屏幕分析'),
+                      label: const Text('停止订单分析'),
                     )
                   : FilledButton.icon(
                       key: const Key('start-analysis'),
@@ -244,10 +235,10 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
                           : const Icon(Icons.play_arrow_rounded),
                       label: Text(
                         !_vlmServerConfigured
-                            ? '先配置 .env 并重新构建'
+                            ? '当前版本暂不可用'
                             : (!_overlayGranted
-                                ? '先授权悬浮窗'
-                                : (!_locationGranted ? '先授权定位' : '开始屏幕分析')),
+                                ? '先开启悬浮提示'
+                                : (!_locationGranted ? '先开启位置服务' : '开始订单分析')),
                         style: const TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w800,
@@ -286,7 +277,7 @@ class _BrandHeader extends StatelessWidget {
                 ),
               ),
               Text(
-                '局域网 VLM 订单价值分析',
+                '看清时间成本，再决定抢哪单',
                 style: TextStyle(color: _muted, fontSize: 13),
               ),
             ],
@@ -309,8 +300,7 @@ class _Logo extends StatelessWidget {
         gradient: LinearGradient(colors: [_coral, _orange]),
         borderRadius: BorderRadius.all(Radius.circular(16)),
       ),
-      child:
-          const Icon(Icons.center_focus_strong, color: Colors.white, size: 28),
+      child: const Icon(Icons.alt_route_rounded, color: Colors.white, size: 28),
     );
   }
 }
@@ -359,7 +349,7 @@ class _StatusHero extends StatelessWidget {
               ),
               const SizedBox(width: 9),
               Text(
-                running ? '正在识别屏幕' : '分析器未启动',
+                running ? '正在留意新订单' : '订单分析尚未开始',
                 style: const TextStyle(
                     color: Colors.white, fontWeight: FontWeight.w800),
               ),
@@ -370,7 +360,7 @@ class _StatusHero extends StatelessWidget {
             Row(
               children: [
                 _HeroMetric(
-                    label: '识别价格',
+                    label: '订单金额',
                     value: '¥${snapshot.price!.toStringAsFixed(2)}'),
                 _HeroMetric(
                   label: '行程里程',
@@ -379,7 +369,7 @@ class _StatusHero extends StatelessWidget {
                       : '${snapshot.tripDistanceKm!.toStringAsFixed(1)} km',
                 ),
                 _HeroMetric(
-                  label: '高德有效时薪',
+                  label: '预计毛时薪',
                   value: snapshot.estimatedHourlyIncome == null
                       ? '--'
                       : '¥${snapshot.estimatedHourlyIncome!.toStringAsFixed(0)}/h',
@@ -389,8 +379,8 @@ class _StatusHero extends StatelessWidget {
           else
             Text(
               running
-                  ? (snapshot.message ?? '请切换到网约车司机端订单页面')
-                  : '启动后切换到司机端，识别结果将通过悬浮窗显示。',
+                  ? (snapshot.message ?? '请切换到司机端订单页')
+                  : '开始后切换到司机端，画面停稳后会自动分析。',
               style: const TextStyle(color: Color(0xFFB8C0D4), height: 1.5),
             ),
         ],
@@ -442,7 +432,7 @@ class _OrdersCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '本屏完整订单 · ${orders.length} 张',
+            '本次发现 ${orders.length} 个完整订单',
             style: const TextStyle(
               color: _ink,
               fontSize: 16,
@@ -451,7 +441,7 @@ class _OrdersCard extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           const Text(
-            '按高德实时路线的有效时薪从高到低排列',
+            '按实时路线估算的毛时薪从高到低排列',
             style: TextStyle(color: _muted, fontSize: 11),
           ),
           const SizedBox(height: 10),
@@ -540,7 +530,7 @@ class _OrderRow extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '¥$price  ·  接$pickup km/$minutes 分  ·  行$trip km',
+                '¥$price  ·  接驾 $pickup km/$minutes 分  ·  行程 $trip km',
                 style:
                     const TextStyle(color: _ink, fontWeight: FontWeight.w800),
               ),
@@ -556,8 +546,8 @@ class _OrderRow extends StatelessWidget {
               const SizedBox(height: 3),
               Text(
                 order.routeStatus == 'ok'
-                    ? '高德：接驾 $pickupRoute 分/$pickupRouteKm km + 等客 $waiting 分 + 行程 $tripRoute 分/$tripRouteKm km'
-                    : '高德算路暂不可用',
+                    ? '路线估算：接驾 $pickupRoute 分/$pickupRouteKm km + 等客 $waiting 分 + 行程 $tripRoute 分/$tripRouteKm km'
+                    : '地图暂时无法计算路线',
                 style: const TextStyle(color: _muted, fontSize: 11),
               ),
               if (order.routeStatus == 'ok' && trafficDetails.isNotEmpty) ...[
@@ -581,7 +571,7 @@ class _OrderRow extends StatelessWidget {
               if (order.routeStatus == 'ok' && amapRoute.isNotEmpty) ...[
                 const SizedBox(height: 2),
                 Text(
-                  '高德匹配：$amapRoute',
+                  '地图匹配：$amapRoute',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: _muted, fontSize: 10),
@@ -592,13 +582,41 @@ class _OrderRow extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         Text(
-          order.routeStatus == 'ok' ? '¥$hourly/h' : '待算路',
+          order.routeStatus == 'ok' ? '¥$hourly/小时' : '待算路',
           style: const TextStyle(
             color: _orange,
             fontWeight: FontWeight.w900,
           ),
         ),
       ],
+    );
+  }
+}
+
+class _ServiceWarning extends StatelessWidget {
+  const _ServiceWarning();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFECEE),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFFFC8CE)),
+      ),
+      child: const Row(
+        children: [
+          Icon(Icons.cloud_off_rounded, color: _coral, size: 22),
+          SizedBox(width: 11),
+          Expanded(
+            child: Text(
+              '当前版本未连接分析服务，请联系提供者更新应用。',
+              style: TextStyle(color: _ink, fontSize: 12, height: 1.5),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -690,7 +708,7 @@ class _PrivacyCard extends StatelessWidget {
           SizedBox(width: 11),
           Expanded(
             child: Text(
-              '稳定的新订单画面只上传到同一局域网的 VLM 服务，由服务端调用 DashScope；API Key 不进入 APK。工具不会控制司机端或自动接单。',
+              '只在订单画面停稳后进行分析，不会保存截图，也不会替你点击或抢单。位置信息仅用于估算接驾路线。',
               style: TextStyle(
                   color: Color(0xFF775126), fontSize: 12, height: 1.5),
             ),

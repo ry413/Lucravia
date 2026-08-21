@@ -130,8 +130,8 @@ private class CalibrationView(
 
         val panel = RectF(dp(16f), dp(22f), width - dp(16f), dp(102f))
         canvas.drawRoundRect(panel, dp(14f), dp(14f), panelPaint)
-        canvas.drawText("校准订单识别区域", dp(30f), dp(53f), titlePaint)
-        canvas.drawText("拖动上下绿线；亮区会发送给 VLM", dp(30f), dp(79f), bodyPaint)
+        canvas.drawText("选择订单区域", dp(30f), dp(53f), titlePaint)
+        canvas.drawText("拖动上下绿线；只分析亮区内的订单", dp(30f), dp(79f), bodyPaint)
 
         val buttonTop = height - dp(94f)
         val buttonBottom = height - dp(34f)
@@ -141,7 +141,7 @@ private class CalibrationView(
         canvas.drawRoundRect(saveRect, dp(14f), dp(14f), savePaint)
         val textY = buttonTop + dp(38f)
         canvas.drawText("取消", cancelRect.centerX(), textY, buttonTextPaint)
-        canvas.drawText("保存区域", saveRect.centerX(), textY, buttonTextPaint)
+        canvas.drawText("保存", saveRect.centerX(), textY, buttonTextPaint)
     }
 
     private fun drawHandle(canvas: Canvas, centerY: Float) {

@@ -83,8 +83,7 @@ class MainActivity : FlutterActivity() {
                         ) {
                             result.error(
                                 "server_url_required",
-                                "请在工程根目录 .env 配置 VLM_SERVER_URL 和 " +
-                                    "SHARED_SECRET 后重新构建",
+                                "当前版本未连接分析服务，请联系提供者更新应用",
                                 null,
                             )
                         } else if (!Settings.canDrawOverlays(this)) {
@@ -126,7 +125,7 @@ class MainActivity : FlutterActivity() {
                         when {
                             ScreenCaptureService.isRunning -> result.error(
                                 "capture_running",
-                                "请先停止屏幕分析，再校准识图区域",
+                                "请先停止订单分析，再重新选择订单区域",
                                 null,
                             )
                             !Settings.canDrawOverlays(this) -> result.error(
@@ -136,7 +135,7 @@ class MainActivity : FlutterActivity() {
                             )
                             calibrationController != null || calibrationOverlay != null -> result.error(
                                 "calibration_active",
-                                "识图区域校准已经打开",
+                                "订单区域选择已经打开",
                                 null,
                             )
                             else -> {
@@ -222,14 +221,14 @@ class MainActivity : FlutterActivity() {
             },
             onCancel = {
                 if (calibrationController === controller) calibrationController = null
-                Toast.makeText(this, "已取消区域校准", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "已取消选择", Toast.LENGTH_SHORT).show()
             },
         )
         calibrationController = controller
         controller.show()
         Toast.makeText(
             this,
-            "请打开司机端目标页面，再点悬浮按钮开始校准",
+            "请打开司机端订单页，再点悬浮按钮选择区域",
             Toast.LENGTH_LONG,
         ).show()
     }
@@ -246,14 +245,14 @@ class MainActivity : FlutterActivity() {
                 if (calibrationOverlay === overlay) calibrationOverlay = null
                 Toast.makeText(
                     this,
-                    "识图区域已保存：${(region.topRatio * 100).toInt()}%–" +
+                    "订单区域已保存：${(region.topRatio * 100).toInt()}%–" +
                         "${(region.bottomRatio * 100).toInt()}%",
                     Toast.LENGTH_SHORT,
                 ).show()
             },
             onCancel = {
                 if (calibrationOverlay === overlay) calibrationOverlay = null
-                Toast.makeText(this, "已取消区域校准", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "已取消选择", Toast.LENGTH_SHORT).show()
             },
         )
         calibrationOverlay = overlay

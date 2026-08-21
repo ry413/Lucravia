@@ -37,20 +37,20 @@ void main() {
         .setMockMethodCallHandler(events, null);
   });
 
-  testWidgets('展示局域网 VLM 分析控制台', (tester) async {
+  testWidgets('展示用户友好的订单分析首页', (tester) async {
     await tester.pumpWidget(const CheatCatApp());
     await tester.pump();
 
-    expect(find.text('局域网 VLM 订单价值分析'), findsOneWidget);
-    expect(find.text('局域网 VLM 服务'), findsOneWidget);
-    expect(find.textContaining('已从工程根目录 .env 编译服务地址和请求签名密钥'), findsOneWidget);
-    expect(find.text('允许悬浮结果窗'), findsOneWidget);
-    expect(find.text('校准识图区域'), findsOneWidget);
+    expect(find.text('看清时间成本，再决定抢哪单'), findsOneWidget);
+    expect(find.text('开启悬浮提示'), findsOneWidget);
+    expect(find.text('选择订单区域'), findsOneWidget);
     expect(find.textContaining('18%–92%'), findsOneWidget);
-    expect(find.text('开始屏幕分析'), findsWidgets);
+    expect(find.text('开始订单分析'), findsWidgets);
+    expect(find.textContaining('VLM'), findsNothing);
+    expect(find.textContaining('.env'), findsNothing);
     await tester.drag(find.byType(ListView), const Offset(0, -700));
     await tester.pump();
-    expect(find.textContaining('不会控制司机端'), findsOneWidget);
+    expect(find.textContaining('不会替你点击或抢单'), findsOneWidget);
   });
 
   test('解析服务端返回的多订单列表', () {
