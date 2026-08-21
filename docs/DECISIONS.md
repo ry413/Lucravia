@@ -7,6 +7,7 @@
 **Reason:** 产品只需读取像素，不需要也不应获得操作其他 App 的能力。
 
 **Consequences:** Android 14+ 每次捕获会话都需要用户重新同意；捕获期间必须保持 `mediaProjection` 前台服务。
+为避免单应用选择器冷启动目标 App 时的后台启动竞态，宿主 Activity 会在打开选择器前先以 `location` 类型预启动服务；获得授权后才升级为 `mediaProjection|location`。用户取消授权时必须立即停止该预启动服务。
 
 ## 使用 DashScope qwen3.7-flash 进行整屏视觉识别
 

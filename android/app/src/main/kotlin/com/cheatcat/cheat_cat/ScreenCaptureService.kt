@@ -40,7 +40,10 @@ import kotlin.math.roundToInt
 
 class ScreenCaptureService : Service() {
     companion object {
+        const val ACTION_PREPARE = "com.cheatcat.cheat_cat.PREPARE_CAPTURE"
         const val ACTION_START = "com.cheatcat.cheat_cat.START_CAPTURE"
+        const val ACTION_CANCEL_PREPARATION =
+            "com.cheatcat.cheat_cat.CANCEL_CAPTURE_PREPARATION"
         const val ACTION_STOP = "com.cheatcat.cheat_cat.STOP_CAPTURE"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
@@ -51,6 +54,7 @@ class ScreenCaptureService : Service() {
         private const val NOTIFICATION_CHANNEL = "screen_analysis"
         private const val NOTIFICATION_ID = 3107
         private const val FRAME_SAMPLE_INTERVAL_MS = 450L
+        private const val OVERLAY_AFTER_APP_PICKER_DELAY_MS = 750L
         private const val VLM_IMAGE_MAX_WIDTH = 720
         // Ignore the target app's changing header/countdown and its bottom navigation.
         private const val FINGERPRINT_TOP_RATIO = 0.18
@@ -75,6 +79,7 @@ class ScreenCaptureService : Service() {
     private var activeVlmCall: VlmServerClient.Call? = null
     private var lastFrameSampleAt = 0L
     private var stopping = false
+    private var latestStatus = "运行中 · 等待稳定"
     private var statusOverlay: AnalyzerStatusOverlay? = null
     private var highlightOverlay: OrderHighlightOverlay? = null
     @Volatile
@@ -107,7 +112,9 @@ class ScreenCaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            ACTION_PREPARE -> prepareForProjectionPermission()
             ACTION_STOP -> stopAnalysis("订单分析已停止")
+            ACTION_CANCEL_PREPARATION -> stopAnalysis("已取消屏幕共享")
             ACTION_START -> startAnalysis(intent)
         }
         return START_NOT_STICKY
@@ -115,10 +122,21 @@ class ScreenCaptureService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private fun prepareForProjectionPermission() {
+        if (isRunning) return
+        stopping = false
+        startAsForeground(projectionActive = false)
+        AnalyzerEventBus.emit(
+            mapOf("status" to "starting", "message" to "等待确认屏幕共享"),
+        )
+    }
+
     private fun startAnalysis(intent: Intent) {
         if (isRunning) return
         stopping = false
-        startAsForeground()
+        // Upgrade the already-running location foreground service only after Android grants the
+        // one-time projection token, as required when targeting Android 14 or newer.
+        startAsForeground(projectionActive = true)
 
         val serverUrl = intent.getStringExtra(EXTRA_VLM_SERVER_URL)?.trim().orEmpty()
         if (serverUrl.isEmpty()) {
@@ -195,7 +213,14 @@ class ScreenCaptureService : Service() {
             )
 
             isRunning = true
-            prepareOverlays()
+            latestStatus = "运行中 · 等待稳定"
+            // Android's projection permission and single-app picker hide non-system overlays.
+            // Let their windows finish before attaching ours, especially when the selected task
+            // is being cold-started at the same time as this callback.
+            Handler(mainLooper).postDelayed(
+                { if (isRunning) prepareOverlays() },
+                OVERLAY_AFTER_APP_PICKER_DELAY_MS,
+            )
             val event = mapOf<String, Any>(
                 "status" to "scanning",
                 "message" to "等待订单画面停稳",
@@ -392,12 +417,13 @@ class ScreenCaptureService : Service() {
         if (highlightOverlay == null) highlightOverlay = OrderHighlightOverlay(this, manager)
         if (statusOverlay == null) {
             statusOverlay = AnalyzerStatusOverlay(this, manager).also {
-                it.show("运行中 · 等待稳定")
+                it.show(latestStatus)
             }
         }
     }
 
     private fun updateStatus(status: String) {
+        latestStatus = status
         statusOverlay?.update(status)
     }
 
@@ -484,7 +510,7 @@ class ScreenCaptureService : Service() {
             }
     }
 
-    private fun startAsForeground() {
+    private fun startAsForeground(projectionActive: Boolean) {
         val stopIntent = Intent(this, ScreenCaptureService::class.java).setAction(ACTION_STOP)
         val stopPendingIntent = PendingIntent.getService(
             this,
@@ -507,8 +533,12 @@ class ScreenCaptureService : Service() {
         }
         val notification = builder
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("跑单助手正在留意新订单")
-            .setContentText("订单画面停稳后会自动分析")
+            .setContentTitle(
+                if (projectionActive) "跑单助手正在留意新订单" else "跑单助手等待屏幕共享",
+            )
+            .setContentText(
+                if (projectionActive) "订单画面停稳后会自动分析" else "请在系统窗口中选择要分析的应用",
+            )
             .setContentIntent(openPendingIntent)
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
@@ -516,11 +546,16 @@ class ScreenCaptureService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val foregroundTypes = if (projectionActive) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            }
             startForeground(
                 NOTIFICATION_ID,
                 notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION,
+                foregroundTypes,
             )
         } else {
             startForeground(NOTIFICATION_ID, notification)

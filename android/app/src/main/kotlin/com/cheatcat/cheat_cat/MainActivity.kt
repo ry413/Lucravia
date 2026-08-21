@@ -101,6 +101,7 @@ class MainActivity : FlutterActivity() {
                                 } else {
                                     pendingVlmServerUrl = serverUrl
                                     pendingDriverLocation = location
+                                    startProjectionPreparation()
                                     val manager = getSystemService(
                                         Context.MEDIA_PROJECTION_SERVICE,
                                     ) as MediaProjectionManager
@@ -165,6 +166,16 @@ class MainActivity : FlutterActivity() {
             PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) ==
             PackageManager.PERMISSION_GRANTED
+
+    private fun startProjectionPreparation() {
+        val preparationIntent = Intent(this, ScreenCaptureService::class.java)
+            .setAction(ScreenCaptureService.ACTION_PREPARE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(preparationIntent)
+        } else {
+            startService(preparationIntent)
+        }
+    }
 
     @Suppress("MissingPermission")
     private fun resolveCurrentLocation(onResult: (Location?) -> Unit) {
@@ -275,6 +286,10 @@ class MainActivity : FlutterActivity() {
         if (resultCode != Activity.RESULT_OK || data == null) {
             pendingVlmServerUrl = null
             pendingDriverLocation = null
+            startService(
+                Intent(this, ScreenCaptureService::class.java)
+                    .setAction(ScreenCaptureService.ACTION_CANCEL_PREPARATION),
+            )
             AnalyzerEventBus.emit(
                 mapOf("status" to "idle", "message" to "用户取消了屏幕捕获授权"),
             )
@@ -296,10 +311,18 @@ class MainActivity : FlutterActivity() {
         }
         pendingVlmServerUrl = null
         pendingDriverLocation = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
+        // ACTION_PREPARE has already made this an active foreground service while our Activity
+        // was visible. Delivering the granted token to that service is reliable even when the
+        // single-app picker has moved a cold-started target task to the foreground.
+        try {
             startService(serviceIntent)
+        } catch (error: IllegalStateException) {
+            // Defensive fallback if an OEM killed the preparation service during task selection.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                throw error
+            }
         }
     }
 }
