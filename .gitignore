@@ -37,6 +37,10 @@ migrate_working_dir/
 .env.*
 !.env.example
 /server/logs/
+/server/updates/*
+!/server/updates/.gitkeep
+/android/key.properties
+/android/app/lucravia-release.jks
 
 # Symbolication related
 app.*.symbols

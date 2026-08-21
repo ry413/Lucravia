@@ -28,19 +28,25 @@ from server.server import (
     parse_model_content,
     sign_request,
 )
+from server.app_updates import UpdateRepository, sha256_file
 
 
 TEST_SHARED_SECRET = "test-shared-secret-with-at-least-32-chars"
 
 
-def signed_headers(path: str, body: bytes, request_id: str) -> dict[str, str]:
+def signed_headers(
+    path: str,
+    body: bytes,
+    request_id: str,
+    method: str = "POST",
+) -> dict[str, str]:
     timestamp = str(int(time.time()))
     return {
         "X-Request-Id": request_id,
         "X-Request-Timestamp": timestamp,
         "X-Request-Signature": sign_request(
             TEST_SHARED_SECRET,
-            "POST",
+            method,
             path,
             timestamp,
             request_id,
@@ -50,6 +56,68 @@ def signed_headers(path: str, body: bytes, request_id: str) -> dict[str, str]:
 
 
 class ServerTest(unittest.TestCase):
+    def test_authenticated_update_manifest_and_apk_download(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            update_dir = Path(directory)
+            apk = update_dir / "lucravia-2.apk"
+            apk.write_bytes(b"signed-apk")
+            (update_dir / "latest.json").write_text(
+                json.dumps({
+                    "version_code": 2,
+                    "version_name": "1.0.1",
+                    "apk_file": apk.name,
+                    "apk_sha256": sha256_file(apk),
+                    "apk_size_bytes": apk.stat().st_size,
+                    "release_notes": "修复路线匹配",
+                    "required": False,
+                }),
+                encoding="utf-8",
+            )
+            VlmRequestHandler.updates = UpdateRepository(update_dir)
+            VlmRequestHandler.authenticator = SharedSecretAuthenticator(TEST_SHARED_SECRET)
+            VlmRequestHandler.logger = logging.getLogger("server_update_test")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), VlmRequestHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            try:
+                manifest_request = Request(
+                    f"{base_url}/v1/update/latest",
+                    method="GET",
+                    headers=signed_headers(
+                        "/v1/update/latest",
+                        b"",
+                        "update-check-123",
+                        method="GET",
+                    ),
+                )
+                with urlopen(manifest_request) as response:
+                    manifest = json.load(response)
+                self.assertEqual(2, manifest["version_code"])
+                self.assertEqual("修复路线匹配", manifest["release_notes"])
+                self.assertNotIn("apk_file", manifest)
+
+                apk_request = Request(
+                    f"{base_url}/v1/update/apk",
+                    method="GET",
+                    headers=signed_headers(
+                        "/v1/update/apk",
+                        b"",
+                        "update-apk-123",
+                        method="GET",
+                    ),
+                )
+                with urlopen(apk_request) as response:
+                    self.assertEqual(b"signed-apk", response.read())
+
+                with self.assertRaises(HTTPError) as caught:
+                    urlopen(f"{base_url}/v1/update/latest")
+                self.assertEqual(401, caught.exception.code)
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
     def test_route_distance_audit_allows_real_long_trip_but_rejects_scale_error(self) -> None:
         validate_route_distance("行程", actual_km=480.0, platform_km=500.0)
         validate_route_distance("接驾", actual_km=7.0, platform_km=2.0)

@@ -26,6 +26,12 @@ if ((sharedSecret.startsWith('"') && sharedSecret.endsWith('"')) ||
 def escapedSharedSecret = sharedSecret
         .replace("\\", "\\\\")
         .replace('"', '\\"')
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file("key.properties")
+def hasReleaseSigning = keystorePropertiesFile.exists()
+if (hasReleaseSigning) {
+    keystorePropertiesFile.withReader("UTF-8") { reader -> keystoreProperties.load(reader) }
+}
 
 android {
     namespace = "com.cheatcat.cheat_cat"
@@ -45,9 +51,19 @@ android {
         buildConfig = true
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                keyAlias = keystoreProperties["keyAlias"]
+                keyPassword = keystoreProperties["keyPassword"]
+                storeFile = rootProject.file(keystoreProperties["storeFile"])
+                storePassword = keystoreProperties["storePassword"]
+            }
+        }
+    }
+
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.cheatcat.cheat_cat"
+        applicationId = "com.lucravia.xiaozhuiot"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 23
@@ -60,10 +76,21 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.debug
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.release
+            }
         }
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    def buildsRelease = graph.allTasks.any { task ->
+        task.name in ["assembleRelease", "bundleRelease", "packageRelease"]
+    }
+    if (buildsRelease && !hasReleaseSigning) {
+        throw new GradleException(
+                "缺少永久 Release 签名：请恢复 android/key.properties 和 " +
+                        "android/app/lucravia-release.jks，绝不能生成新签名。")
     }
 }
 

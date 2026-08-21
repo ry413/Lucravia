@@ -53,6 +53,40 @@ void main() {
     expect(find.textContaining('不会替你点击或抢单'), findsOneWidget);
   });
 
+  testWidgets('启动后展示服务端发布的新版本', (tester) async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methods, (call) async {
+      if (call.method == 'capabilities') {
+        return <String, Object?>{
+          'overlayGranted': true,
+          'locationGranted': true,
+          'running': false,
+          'vlmServerConfigured': true,
+          'scanRegionConfigured': false,
+          'versionName': '1.1.0',
+          'versionCode': 2,
+        };
+      }
+      if (call.method == 'checkForUpdate') {
+        return <String, Object?>{
+          'versionCode': 3,
+          'versionName': '1.1.1',
+          'apkSizeBytes': 41943040,
+          'releaseNotes': '修复地图匹配',
+          'required': false,
+        };
+      }
+      return null;
+    });
+
+    await tester.pumpWidget(const CheatCatApp());
+    await tester.pumpAndSettle();
+
+    expect(find.text('发现新版本 1.1.1'), findsOneWidget);
+    expect(find.textContaining('修复地图匹配'), findsOneWidget);
+    expect(find.text('立即更新'), findsOneWidget);
+  });
+
   test('解析服务端返回的多订单列表', () {
     final snapshot = AnalyzerSnapshot.fromMap({
       'status': 'scanning',

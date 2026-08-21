@@ -19,8 +19,14 @@ from urllib.request import Request, urlopen
 
 try:
     from server.amap import AmapClient, AmapOrderEnricher, Point
+    from server.app_updates import (
+        InvalidUpdateManifest,
+        UpdateNotPublished,
+        UpdateRepository,
+    )
 except ModuleNotFoundError:  # Supports `python3 server/server.py` from repo root.
     from amap import AmapClient, AmapOrderEnricher, Point
+    from app_updates import InvalidUpdateManifest, UpdateNotPublished, UpdateRepository
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +37,7 @@ DASHSCOPE_ENDPOINT = (
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_VISION_PIXELS = 1_310_720  # 1280 visual tokens at 32x32 pixels/token.
 SIGNATURE_MAX_AGE_SECONDS = 300
+UPDATE_DIR = Path(__file__).resolve().parent / "updates"
 
 PROMPT = """你是网约车司机端订单截图解析器。忽略状态栏、刷新倒计时、底部导航和“跑单助手”悬浮窗。
 识别画面中每一张订单卡片，严格保持从上到下顺序，禁止把相邻卡片的字段混合。
@@ -292,19 +299,53 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
     logger: logging.Logger
     cancellations = CancellationRegistry()
     authenticator: SharedSecretAuthenticator
+    updates = UpdateRepository(UPDATE_DIR)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path != "/health":
+        if self.path == "/health":
+            self._json_response(
+                200,
+                {
+                    "status": "ok",
+                    "model": MODEL,
+                    "amap_routing": self.route_enricher is not None,
+                },
+            )
+            return
+        if self.path not in ("/v1/update/latest", "/v1/update/apk"):
             self._json_response(404, {"error": "not_found"})
             return
-        self._json_response(
-            200,
-            {
-                "status": "ok",
-                "model": MODEL,
-                "amap_routing": self.route_enricher is not None,
-            },
-        )
+        request_id = self.headers.get("X-Request-Id", "")
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id)
+            or not self._authenticate("GET", request_id, b"")
+        ):
+            self._unauthorized(request_id)
+            return
+        try:
+            manifest, apk_path = self.updates.latest()
+            if self.path == "/v1/update/latest":
+                self.logger.info(
+                    "update_check client=%s request_id=%s version_code=%s",
+                    self.client_address[0],
+                    request_id,
+                    manifest["version_code"],
+                )
+                self._json_response(200, manifest)
+            else:
+                self.logger.info(
+                    "update_download client=%s request_id=%s version_code=%s bytes=%s",
+                    self.client_address[0],
+                    request_id,
+                    manifest["version_code"],
+                    manifest["apk_size_bytes"],
+                )
+                self._file_response(apk_path)
+        except UpdateNotPublished as error:
+            self._json_response(404, {"error": str(error)})
+        except InvalidUpdateManifest as error:
+            self.logger.error("update_manifest_invalid error=%s", error)
+            self._json_response(503, {"error": str(error)})
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/v1/cancel":
@@ -316,7 +357,7 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
                 length = int(self.headers.get("Content-Length", "0"))
             except (TypeError, ValueError):
                 length = -1
-            if length != 0 or not self._authenticate(request_id, b""):
+            if length != 0 or not self._authenticate("POST", request_id, b""):
                 self._unauthorized(request_id)
                 return
             self.cancellations.cancel(request_id)
@@ -350,7 +391,7 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
         image_bytes = self.rfile.read(length)
         if (
             not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id)
-            or not self._authenticate(request_id, image_bytes)
+            or not self._authenticate("POST", request_id, image_bytes)
         ):
             self._unauthorized(request_id)
             return
@@ -463,9 +504,9 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
             return None
         return Point(longitude=longitude, latitude=latitude)
 
-    def _authenticate(self, request_id: str, body: bytes) -> bool:
+    def _authenticate(self, method: str, request_id: str, body: bytes) -> bool:
         return self.authenticator.verify(
-            method="POST",
+            method=method,
             path=self.path,
             timestamp=self.headers.get("X-Request-Timestamp", ""),
             request_id=request_id,
@@ -492,6 +533,17 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _file_response(self, path: Path) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.android.package-archive")
+        self.send_header("Content-Length", str(path.stat().st_size))
+        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
+        self.send_header("Cache-Control", "private, no-store")
+        self.end_headers()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                self.wfile.write(chunk)
 
 
 def main() -> None:

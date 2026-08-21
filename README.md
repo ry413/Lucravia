@@ -21,6 +21,7 @@
 12. 本屏存在多张完整订单时，客户端在最多三张可定位的卡片上分别显示排行、预计毛时薪、接驾/等客/载客耗时、接驾/载客/总行驶里程、两段红绿灯数量、拥堵/严重拥堵里程及预计道路收费，并以绿 / 橙 / 蓝细框区分；评价窗使用完整中文字段和单位，不要求司机理解缩写。同时播放提示音和振动，Flutter 详情页保留两段拆分和主要收费道路名称。
 13. 推荐框显示期间只在本地监测页面变化，不重复调用 VLM；用户滚动或订单刷新后先撤框，再等待新画面稳定。
 14. VLM / 高德处理期间仍持续做本地画面指纹检测；订单区域一旦发生实质变化，客户端立即断开旧 HTTP 请求并释放分析槽位，服务端收到请求 ID 对应的取消信号后丢弃旧结果且不再开始高德算路。新页面稳定后无需等待旧请求返回即可发起新分析。
+15. 客户端启动后会通过同一共享密钥检查服务端更新。发现更高 `versionCode` 时，首页显示版本说明和安装包大小；用户点击后由 App 流式下载 APK、校验大小与 SHA-256，再交给 Android 系统安装器。普通应用不能静默安装，首次需允许“安装未知应用”，之后仍由用户确认覆盖更新。标记为必要更新的版本会阻止开始新的订单分析。
 
 网络失败时，同一稳定画面最早 3 秒后重试。Android 14 及更高版本要求每次新的屏幕捕获会话都由用户重新确认。
 
@@ -63,6 +64,39 @@ cd android
 
 Debug APK 生成在 `build/app/outputs/flutter-apk/app-debug.apk`。
 
+## Android 正式签名与应用内更新
+
+正式包名为 `com.lucravia.xiaozhuiot`，版本从 `1.1.0+2` 开始使用永久 Release 签名。当前工作区已经生成以下两个本地机密文件，它们均被 Git 忽略：
+
+- `android/app/lucravia-release.jks`
+- `android/key.properties`
+
+必须立即把二者一起离线备份。以后换电脑或 CI 构建时应恢复原文件，绝不能生成新签名；签名丢失后，已经安装的客户端无法再覆盖更新。当前签名证书 SHA-256 为 `0e35c5c488de1ba6de6978e1149614c4a0f2f4f0aa4640d556dc897cb390ada7`，发布脚本会同时核验包名、版本与该证书，防止误发 Debug 或错误签名的 APK。
+
+原先 `com.cheatcat.cheat_cat` 的 Debug 安装与正式签名/包名不兼容，测试手机需要最后卸载一次旧版，再安装首个正式 APK。之后发布更新：
+
+```bash
+# 1. 先在 pubspec.yaml 增加 versionName 和 versionCode，例如 1.1.1+3
+flutter build apk --release
+
+# 2. 把签名 APK 和原子更新清单发布到本机 server/updates/
+python3 server/publish_update.py \
+  build/app/outputs/flutter-apk/app-release.apk \
+  --version-code 3 \
+  --version-name 1.1.1 \
+  --notes "本次更新说明"
+
+# 紧急且必须安装的版本可额外传 --required
+```
+
+`server/updates/latest.json` 和 APK 含构建产物与 APK 内的测试共享密钥，因此不会进入 Git。把本机 `server/updates/` 同步到 VPS 仓库的同名目录即可；首次部署服务端更新接口需要 `git pull` 并重启 Python 服务，后续只替换发布文件无需重启：
+
+```bash
+rsync -av server/updates/ <VPS>:<项目目录>/server/updates/
+```
+
+服务端提供鉴权的 `GET /v1/update/latest` 与 `GET /v1/update/apk`，未持有 APK 内共享密钥的请求无法列出或下载更新。发布脚本不会删除旧 APK，可在确认用户不再需要回退后手工清理。
+
 ## Git 与 VPS 同步
 
 仓库使用 `main` 分支。`.env`、服务端日志、Flutter/Gradle 构建缓存、APK、IDE 配置、定位数据和签名文件都不会进入 Git；`.env.example`、依赖锁文件和 Gradle Wrapper 会被提交，以便新机器复现环境。
@@ -87,7 +121,7 @@ cp .env.example .env
 git pull --ff-only
 ```
 
-当前 Python 服务已对两个 POST 端点做共享密钥 HMAC 验签；未签名请求会在触发 DashScope/高德费用前返回 401。`GET /health` 保持公开且不调用云 API。若将 8765 端口暴露公网，仍建议在反向代理上启用 HTTPS，防止截图与定位被窃听。
+当前 Python 服务已对两个 POST 分析端点和两个 GET 更新端点做共享密钥 HMAC 验签；未签名请求会在触发 DashScope/高德费用或下载 APK 前返回 401。`GET /health` 保持公开且不调用云 API。若将 8765 端口暴露公网，仍建议在反向代理上启用 HTTPS，防止截图、定位与更新流量被窃听。
 
 ## 重要代码
 
@@ -107,3 +141,6 @@ git pull --ff-only
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/ScanRegion.kt`：裁剪、指纹和屏幕坐标的统一换算。
 - `server/server.py`：局域网 HTTP、DashScope 调用和滚动日志。
 - `server/amap.py`：GPS 坐标转换、POI 消歧、驾车路径规划和有效时薪计算。
+- `server/app_updates.py`：更新清单验证与 APK 仓库。
+- `server/publish_update.py`：把正式签名 APK 发布到 `server/updates/`。
+- `android/app/src/main/kotlin/com/cheatcat/cheat_cat/AppUpdateManager.kt`：鉴权检查、流式下载、摘要校验与系统安装器。

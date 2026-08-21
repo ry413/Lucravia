@@ -10,12 +10,14 @@
 - 用户授权悬浮窗并确认系统屏幕捕获后，原生前台服务持续获取屏幕帧。
 - 用户授予前台定位权限；启动前取得较新位置，分析服务运行时持续更新 GPS/网络位置。
 - Android Gradle 从根目录 `.env` 读取 `VLM_SERVER_URL` 和测试期 `SHARED_SECRET` 并编译进 `BuildConfig`；DashScope/高德 Key 不进入 APK。
+- 正式 Android 应用 ID 为 `com.lucravia.xiaozhuiot`，当前版本 `1.1.0+2`。Release 构建使用已生成但被 Git 忽略的永久 PKCS12 签名；签名库与密码文件必须离线备份。
 - 前台服务约每 450 ms 生成一次 64×64 亮度指纹，排除顶部 18% 与底部 8%；连续两帧稳定且与上次提交不同才发送截图。
 - 校准先显示小型启动浮窗，让用户可正常打开目标 App；点击后才进入全屏拖动模式，并可在目标页面保存或取消。区域以归一化比例持久化；未校准时默认完整屏幕。
 - 截图先裁出保存区域，再缩放到最大 720 px 宽并以质量 72 压成 JPEG，以原始字节 POST 到局域网 Python 服务 `/v1/analyze`；请求头记录实际尺寸、扫描比例和手机编码耗时。
 - Python 服务从根目录 `.env` 读取 DashScope Key，将 JPEG 转 Base64，关闭思考并以 JSON Mode 调用 `qwen3.7-flash`。
 - 服务端将 `max_pixels` 限为 1,310,720（1280 视觉 Token），避免后续设备尺寸变化意外增加视觉输入。
 - 服务端提供公开无成本的 `/health`；两个 POST 端点必须通过 HMAC-SHA256 共享密钥签名、±5 分钟时间窗和重放检查，未授权请求在调用 DashScope/高德前返回 401。终端和滚动文件记录请求 ID、客户端 IP、图片大小、局域网接收/构造请求/DashScope 往返/JSON 解析分段耗时、Token、DashScope 请求 ID和完整订单 JSON。
+- 服务端在 `server/updates` 自托管客户端更新，并提供同样 HMAC 鉴权的清单与 APK GET 接口。客户端启动静默检查，也可手动检查；更高版本会显示说明与大小，流式下载后校验 SHA-256 并交给系统安装器。必要更新会阻止开始新分析。
 - 同一设备逻辑上最多一个有效请求；静态页面不重复调用，失败画面最早 3 秒后重试。在途期间仍在本地监测订单区，变化后立即取消客户端连接、释放槽位并等待新页面稳定，不再等旧 VLM 返回才发现过期。
 - 运行时不再显示固定大型结果窗；保留一个可拖动的小状态胶囊，显示等待稳定、识别中、结果和错误阶段。浮窗实时位置从画面指纹中屏蔽，且不使用 `FLAG_SECURE`，用户可以正常系统截屏。
 - 服务端把 GPS 转为高德坐标，从司机/上车点附近搜索 POI，并参考平台接驾/行程里程选择同名候选；完整地址无结果时会去掉道路后缀重试。路径规划 2.0 策略 32 计算当前位置→上车点与上车点→目的地，每段地图里程以 `max(5 km, 平台里程的 60%)` 做宽松数量级审计。异常匹配保留诊断信息但不计算时薪、不参与推荐；可信路线按两段原始秒数 + 固定 3 分钟等客计算有效时薪，`cost,tmcs` 同时提供路况、红绿灯和收费信息。
@@ -25,6 +27,7 @@
 
 ## Recently completed
 
+- 建立首个正式 Android 发布身份：应用 ID `com.lucravia.xiaozhuiot`、版本 `1.1.0+2`、RSA 4096 位永久 Release 签名。实现完整的 VPS 自托管应用内更新：服务端发布/校验/鉴权下载，客户端检查、流式下载、摘要校验、未知来源授权和系统覆盖安装；首个正式 APK 约 41.7 MB。
 - 修复真实平台同名地址被高德解析到外市的问题：真实日志中平台接驾 2.0 km/行程 34.3 km 被错误匹配成高德 274.9 km/297.4 km。现优先附近 POI、利用平台里程选候选并审计最终路线；`route_mismatch` 不再进入最佳订单或悬浮推荐，Flutter 详情明确显示“匹配异常”。
 
 - 删除了误解需求后实现的假订单大厅和 Demo 数据链路。
@@ -60,12 +63,11 @@
 
 ## In progress / next work
 
-1. 配置真实局域网 IP 与 DashScope Key，在 Android 真机验证端到端延迟、日志和调用频率。
-2. 继续收集真实司机端地址，验证同名 POI 消歧和平台/高德里程宽松审计阈值，观察 `route_mismatch`、`amap_ms` 与调用配额。
-3. 将固定 3 分钟等客和价值阈值开放为用户配置。
-4. 根据真机日志校准稳定画面阈值、JPEG 分辨率和失败退避。
-5. 真机检查 `qwen3.7-flash` 的卡片框偏差，必要时再增加固定 UI 的边缘吸附校正。
-6. 重点回归 Android 14+ “目标司机端完全关闭 → 开始分析 → 选择单个应用 → 冷启动目标 App”，确认第一次就出现状态悬浮窗；同时回归取消授权会停止预启动服务。
+1. 立即离线备份 `android/app/lucravia-release.jks` 与 `android/key.properties`，并把本机 `server/updates` 同步到 VPS。
+2. 在真机卸载旧 Debug 包、安装正式 `1.1.0+2`；下一版提高到至少 `+3`，端到端验证检查、未知来源授权、下载、系统覆盖安装和数据保留。
+3. 继续收集真实司机端地址，验证同名 POI 消歧和平台/高德里程宽松审计阈值，观察 `route_mismatch`、`amap_ms` 与调用配额。
+4. 将固定 3 分钟等客和价值阈值开放为用户配置。
+5. 根据真机日志校准稳定画面阈值、JPEG 分辨率和失败退避。
 
 ## Known issues
 
@@ -74,6 +76,7 @@
 - VLM 提示词刻意只支持目标司机端当前 UI；不承诺支持其他平台或后续 UI 版本。
 - 稳定的新订单截图会经过局域网服务上传至 DashScope；服务端不保存图片。
 - 当前 HTTP 服务已有测试期共享密钥验签，可拦截不知密钥的公网扫描与云 API 刷请求；但仍没有 TLS、限流或可撤销的设备身份。密钥可从 APK 提取，而且明文 HTTP 会暴露截图和定位；公网测试仍应配 HTTPS。
+- 更新 APK 含编译进客户端的共享密钥，所以发布文件不进入 Git且下载接口要求鉴权；持有旧 APK 的人仍能提取密钥。2027 年 Android 开发者验证计划全球扩展，正式扩大分发前应使用 Android Developer Console 注册当前包名与签名。
 - 自动化环境没有连接 Android 真机或模拟器；真实 DashScope、高德接口及 MediaProjection/悬浮窗行为依赖用户真机回归。
 - VLM 卡片框是粗定位；坐标无效的订单只保留在 Flutter 结构化结果中，不在司机端页面绘制评价框。
 - 小状态胶囊仍会出现在发送给 VLM 的截图中；服务端提示词要求忽略它，但若物理遮住订单关键字段仍可能导致该订单不完整，应将胶囊拖到空白处。
@@ -87,21 +90,26 @@
 
 - `flutter analyze`：通过。
 - `flutter test`：Flutter 控制台 Widget 测试通过。
-- `python3 -m unittest server.test_server -v`：11 个 `.env`、DashScope payload、JSON、取消协议、HMAC 鉴权/重放、高德 POI/路线审计与 HTTP 端点测试通过。
+- `python3 -m unittest server.test_server -v`：12 个 `.env`、DashScope payload、JSON、取消协议、HMAC 鉴权/重放、鉴权更新下载、高德 POI/路线审计与 HTTP 端点测试通过。
 - `./gradlew testDebugUnitTest`：Android 画面指纹、稳定帧去重、滚动停止、失败退避、多订单与坐标 JSON 解析、提醒框防反馈测试通过。
-- `flutter build apk --debug`：通过。
+- `flutter build apk --release`：通过；产物约 41.7 MB，`aapt` 验证包名/版本为 `com.lucravia.xiaozhuiot`、`1.1.0+2`，`apksigner` 验证证书 SHA-256 为预期值。
 
 ## Important files
 
 - `.env.example`
 - `server/server.py`
 - `server/amap.py`
+- `server/app_updates.py`
+- `server/publish_update.py`
+- `server/updates/`
 - `server/test_server.py`
 - `lib/platform/screen_analyzer.dart`
 - `lib/ui/analyzer_home_screen.dart`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/MainActivity.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/ScreenCaptureService.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/VlmServerClient.kt`
+- `android/app/src/main/kotlin/com/cheatcat/cheat_cat/AppUpdateManager.kt`
+- `android/app/src/main/kotlin/com/cheatcat/cheat_cat/UpdateManifest.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/RequestSigner.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/VlmOrderResponseParser.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/StableFrameGate.kt`

@@ -30,6 +30,11 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
   bool _scanRegionConfigured = false;
   double _scanTopRatio = 0;
   double _scanBottomRatio = 1;
+  String _versionName = '';
+  AppUpdateInfo? _updateInfo;
+  bool _updateChecked = false;
+  bool _checkingUpdate = false;
+  bool _installingUpdate = false;
 
   @override
   void initState() {
@@ -75,14 +80,23 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
         _scanTopRatio = (capabilities['scanTopRatio'] as num?)?.toDouble() ?? 0;
         _scanBottomRatio =
             (capabilities['scanBottomRatio'] as num?)?.toDouble() ?? 1;
+        _versionName = capabilities['versionName'] as String? ?? '';
         _busy = false;
       });
+      if (!_updateChecked) {
+        _updateChecked = true;
+        await _checkForUpdate(silent: true);
+      }
     } on PlatformException catch (error) {
       _showError(error.message ?? error.code);
     }
   }
 
   Future<void> _start() async {
+    if (_updateInfo?.required == true) {
+      _showError('请先安装必要更新，再开始订单分析');
+      return;
+    }
     if (!_vlmServerConfigured) {
       _showError('当前版本未连接分析服务，请联系提供者更新应用');
       return;
@@ -133,6 +147,43 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
     }
   }
 
+  Future<void> _checkForUpdate({bool silent = false}) async {
+    if (_checkingUpdate) return;
+    setState(() => _checkingUpdate = true);
+    try {
+      final update = await _platform.checkForUpdate();
+      if (!mounted) return;
+      setState(() => _updateInfo = update);
+      if (!silent && update == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('当前已是最新版本')),
+        );
+      }
+    } on PlatformException catch (error) {
+      if (!silent) _showError(error.message ?? error.code);
+    } finally {
+      if (mounted) setState(() => _checkingUpdate = false);
+    }
+  }
+
+  Future<void> _installUpdate() async {
+    if (_installingUpdate) return;
+    setState(() => _installingUpdate = true);
+    try {
+      final result = await _platform.installUpdate();
+      if (!mounted) return;
+      if (result?['permissionRequested'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请允许安装应用，然后返回再次点击更新')),
+        );
+      }
+    } on PlatformException catch (error) {
+      _showError(error.message ?? error.code);
+    } finally {
+      if (mounted) setState(() => _installingUpdate = false);
+    }
+  }
+
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -150,6 +201,14 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
             const _BrandHeader(),
             const SizedBox(height: 26),
             _StatusHero(running: _running, snapshot: _snapshot),
+            if (_updateInfo != null) ...[
+              const SizedBox(height: 12),
+              _UpdateCard(
+                update: _updateInfo!,
+                installing: _installingUpdate,
+                onInstall: _installUpdate,
+              ),
+            ],
             if (_snapshot.orders.isNotEmpty) ...[
               const SizedBox(height: 12),
               _OrdersCard(orders: _snapshot.orders),
@@ -200,11 +259,16 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
               title: '开始订单分析',
               description: '确认系统的屏幕共享提示后，切换到司机端即可使用。',
               complete: _running,
-              actionLabel: _running ? '分析中' : '开始',
-              onPressed:
-                  _overlayGranted && _locationGranted && !_running && !_busy
-                      ? _start
-                      : null,
+              actionLabel: _running
+                  ? '分析中'
+                  : (_updateInfo?.required == true ? '请先更新' : '开始'),
+              onPressed: _overlayGranted &&
+                      _locationGranted &&
+                      !_running &&
+                      !_busy &&
+                      _updateInfo?.required != true
+                  ? _start
+                  : null,
             ),
             const SizedBox(height: 20),
             SizedBox(
@@ -217,7 +281,11 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
                     )
                   : FilledButton.icon(
                       key: const Key('start-analysis'),
-                      onPressed: _busy || !_vlmServerConfigured ? null : _start,
+                      onPressed: _busy ||
+                              !_vlmServerConfigured ||
+                              _updateInfo?.required == true
+                          ? null
+                          : _start,
                       style: FilledButton.styleFrom(
                         backgroundColor: _ink,
                         shape: RoundedRectangleBorder(
@@ -236,9 +304,13 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
                       label: Text(
                         !_vlmServerConfigured
                             ? '当前版本暂不可用'
-                            : (!_overlayGranted
-                                ? '先开启悬浮提示'
-                                : (!_locationGranted ? '先开启位置服务' : '开始订单分析')),
+                            : (_updateInfo?.required == true
+                                ? '请先安装必要更新'
+                                : (!_overlayGranted
+                                    ? '先开启悬浮提示'
+                                    : (!_locationGranted
+                                        ? '先开启位置服务'
+                                        : '开始订单分析'))),
                         style: const TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w800,
@@ -247,10 +319,120 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
                     ),
             ),
             const SizedBox(height: 20),
+            _VersionCard(
+              versionName: _versionName,
+              checking: _checkingUpdate,
+              onCheck: () => _checkForUpdate(),
+            ),
+            const SizedBox(height: 12),
             const _PrivacyCard(),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _UpdateCard extends StatelessWidget {
+  const _UpdateCard({
+    required this.update,
+    required this.installing,
+    required this.onInstall,
+  });
+
+  final AppUpdateInfo update;
+  final bool installing;
+  final VoidCallback onInstall;
+
+  @override
+  Widget build(BuildContext context) {
+    final megabytes = update.apkSizeBytes / 1024 / 1024;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE9F8F2),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFBCEBD9)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.system_update_rounded,
+              color: Color(0xFF168A68), size: 24),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${update.required ? '需要更新' : '发现新版本'} ${update.versionName}',
+                  style: const TextStyle(
+                    color: _ink,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  update.releaseNotes.isEmpty
+                      ? '安装包 ${megabytes.toStringAsFixed(1)} MB'
+                      : '${update.releaseNotes}\n安装包 ${megabytes.toStringAsFixed(1)} MB',
+                  style:
+                      const TextStyle(color: _muted, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton(
+            onPressed: installing ? null : onInstall,
+            style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF168A68)),
+            child: installing
+                ? const SizedBox.square(
+                    dimension: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('立即更新'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VersionCard extends StatelessWidget {
+  const _VersionCard({
+    required this.versionName,
+    required this.checking,
+    required this.onCheck,
+  });
+
+  final String versionName;
+  final bool checking;
+  final VoidCallback onCheck;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            versionName.isEmpty ? '跑单助手' : '跑单助手 $versionName',
+            style: const TextStyle(color: _muted, fontSize: 12),
+          ),
+        ),
+        TextButton.icon(
+          onPressed: checking ? null : onCheck,
+          icon: checking
+              ? const SizedBox.square(
+                  dimension: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.refresh_rounded, size: 18),
+          label: const Text('检查更新'),
+        ),
+      ],
     );
   }
 }

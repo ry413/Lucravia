@@ -20,6 +20,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -33,6 +34,17 @@ class MainActivity : FlutterActivity() {
     private var pendingDriverLocation: Location? = null
     private var calibrationController: ScanRegionCalibrationController? = null
     private var calibrationOverlay: ScanRegionCalibrationOverlay? = null
+    private val updateExecutor = Executors.newSingleThreadExecutor()
+    @Volatile
+    private var latestUpdate: UpdateManifest? = null
+
+    private val updateManager: AppUpdateManager by lazy {
+        AppUpdateManager(
+            context = this,
+            serverUrl = BuildConfig.VLM_SERVER_URL,
+            sharedSecret = BuildConfig.SHARED_SECRET,
+        )
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -53,8 +65,76 @@ class MainActivity : FlutterActivity() {
                                 "scanRegionConfigured" to storedRegion.configured,
                                 "scanTopRatio" to storedRegion.region.topRatio,
                                 "scanBottomRatio" to storedRegion.region.bottomRatio,
+                                "versionName" to BuildConfig.VERSION_NAME,
+                                "versionCode" to BuildConfig.VERSION_CODE,
                             ),
                         )
+                    }
+                    "checkForUpdate" -> {
+                        if (
+                            BuildConfig.VLM_SERVER_URL.isBlank() ||
+                            BuildConfig.SHARED_SECRET.trim().length < 32
+                        ) {
+                            result.success(null)
+                        } else {
+                            updateExecutor.execute {
+                                try {
+                                    val update = updateManager.check()
+                                    latestUpdate = update
+                                    runOnUiThread { result.success(update?.toMap()) }
+                                } catch (error: Exception) {
+                                    runOnUiThread {
+                                        result.error(
+                                            "update_check_failed",
+                                            error.localizedMessage ?: "无法检查更新",
+                                            null,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    "installUpdate" -> {
+                        if (!updateManager.canRequestInstalls()) {
+                            updateManager.openInstallPermission()
+                            result.success(mapOf("permissionRequested" to true))
+                        } else {
+                            updateExecutor.execute {
+                                try {
+                                    val update = latestUpdate ?: updateManager.check()
+                                    if (update == null) {
+                                        runOnUiThread {
+                                            result.error(
+                                                "update_unavailable",
+                                                "当前已是最新版本",
+                                                null,
+                                            )
+                                        }
+                                    } else {
+                                        latestUpdate = update
+                                        val apk = updateManager.download(update)
+                                        runOnUiThread {
+                                            startService(
+                                                Intent(this, ScreenCaptureService::class.java)
+                                                    .setAction(ScreenCaptureService.ACTION_STOP),
+                                            )
+                                            updateManager.launchInstaller(apk)
+                                            result.success(
+                                                mapOf("installerStarted" to true),
+                                            )
+                                        }
+                                    }
+                                } catch (error: Exception) {
+                                    runOnUiThread {
+                                        result.error(
+                                            "update_install_failed",
+                                            error.localizedMessage ?: "更新下载失败",
+                                            null,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                     "requestOverlayPermission" -> {
                         startActivity(
@@ -275,6 +355,7 @@ class MainActivity : FlutterActivity() {
         calibrationController = null
         calibrationOverlay?.hide()
         calibrationOverlay = null
+        updateExecutor.shutdownNow()
         super.onDestroy()
     }
 

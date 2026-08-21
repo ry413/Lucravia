@@ -112,3 +112,11 @@
 **Reason:** 语言模型适合做轻量文本规范化，但 POI 名称可能本来就不常见，不能让纠错变成地点猜测。
 
 **Consequences:** UI 和后续地理编码优先使用通过校验的规范化地址，同时原始识别文本始终可追溯；不确定时两者相同。
+
+## 自托管客户端更新并固定发布身份
+
+**Decision:** Android 正式应用 ID 使用 `com.lucravia.xiaozhuiot`，从 `1.1.0+2` 起使用一把永久自管 Release Key。客户端通过现有服务的鉴权 GET 接口检查和下载 `server/updates` 中的 APK，校验大小与 SHA-256 后交给 Android 系统安装器；不实现静默安装。
+
+**Reason:** 当前只向少量测试者直接分发 APK，接入应用商店会增加不必要流程，而继续人工发送每版 APK 无法长期使用。复用现有 VPS、共享密钥和零依赖 Python 服务是当前最小闭环；系统安装确认保留 Android 的安全边界。
+
+**Consequences:** 旧 Debug 包需要最后卸载一次。以后每个发布必须提高 `versionCode`，使用同一签名，并把 `server/updates` 单独同步到 VPS。签名库和密码文件不会进入 Git，必须一起离线备份；丢失后不能更新存量安装。普通更新可以稍后安装，清单 `required=true` 时客户端禁止开始新的分析。未来进入应用商店或 Android 开发者验证时，应沿用同一包名和证书所有权。

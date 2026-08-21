@@ -2,6 +2,30 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+class AppUpdateInfo {
+  const AppUpdateInfo({
+    required this.versionCode,
+    required this.versionName,
+    required this.apkSizeBytes,
+    required this.releaseNotes,
+    required this.required,
+  });
+
+  final int versionCode;
+  final String versionName;
+  final int apkSizeBytes;
+  final String releaseNotes;
+  final bool required;
+
+  factory AppUpdateInfo.fromMap(Map<Object?, Object?> map) => AppUpdateInfo(
+        versionCode: (map['versionCode'] as num).toInt(),
+        versionName: map['versionName'] as String,
+        apkSizeBytes: (map['apkSizeBytes'] as num).toInt(),
+        releaseNotes: map['releaseNotes'] as String? ?? '',
+        required: map['required'] as bool? ?? false,
+      );
+}
+
 class AnalyzerOrder {
   const AnalyzerOrder({
     this.isFullyVisible = false,
@@ -189,4 +213,14 @@ class ScreenAnalyzerPlatform {
 
   Future<void> calibrateScanRegion() =>
       _methods.invokeMethod<void>('calibrateScanRegion');
+
+  Future<AppUpdateInfo?> checkForUpdate() async {
+    final value = await _methods.invokeMapMethod<Object?, Object?>(
+      'checkForUpdate',
+    );
+    return value == null ? null : AppUpdateInfo.fromMap(value);
+  }
+
+  Future<Map<Object?, Object?>?> installUpdate() =>
+      _methods.invokeMapMethod<Object?, Object?>('installUpdate');
 }
