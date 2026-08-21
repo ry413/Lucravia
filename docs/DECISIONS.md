@@ -16,13 +16,13 @@
 
 **Consequences:** DashScope Key 只存在于服务端 `.env`，APK 只包含局域网 URL。识别依赖手机能访问服务端且服务端能访问 DashScope。
 
-## 开发期使用零依赖局域网 HTTP 服务
+## 开发期使用零依赖 HTTP 服务与共享密钥签名
 
-**Decision:** 服务端使用 Python 标准库 `ThreadingHTTPServer`，接受原始 JPEG，并提供 `/health` 和 `/v1/analyze`；调用日志写终端和滚动文件。
+**Decision:** 服务端使用 Python 标准库 `ThreadingHTTPServer`，接受原始 JPEG，并提供 `/health`、`/v1/analyze` 和 `/v1/cancel`；Android 和服务端从各自 `.env` 取得同一 `SHARED_SECRET`，POST 以 HMAC-SHA256 签名，并附带短时效时间戳与唯一请求 ID。
 
-**Reason:** 当前只有同一可信局域网内的开发设备，优先降低部署和调试复杂度，并让 VLM 调用频率、耗时和 Token 清晰可见。
+**Reason:** 测试期只分发给少量可信用户，优先降低部署和调试复杂度。签名不会在每个请求中直接发送密钥，且能在产生 DashScope/高德费用前拦截公网扫描器与简单重放。
 
-**Consequences:** 当前没有 HTTPS、客户端鉴权、数据库或任务队列，不可直接暴露到公网；这些能力在正式部署前必须补齐。
+**Consequences:** 手机和服务器时钟需保持在 5 分钟内；更换密钥后必须重新构建 APK。密钥可能被从 APK 提取，HTTP 也不保护截图与定位的机密性；公网测试应配 HTTPS，正式部署再引入可撤销的设备凭据、限流和持久化指标。
 
 ## 原生服务持有悬浮窗
 

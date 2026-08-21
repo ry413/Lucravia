@@ -17,7 +17,7 @@
 - `ScreenCaptureService` 是 `mediaProjection` 类型前台服务。它约每 450 ms 取一帧，先裁出保存的全宽纵向区域，再缩放到最大 720 px 宽，并确保每台设备同时最多一个 VLM 请求。
 - `FrameChangeDetector` 为实际裁剪区域生成 64×64 亮度指纹；屏幕顶部 18% 和底部 8% 与选区相交的部分仍被排除，以忽略目标 App 倒计时和底部导航。
 - `StableFrameGate` 要求连续两帧稳定，只允许与上次提交明显不同的画面进入 VLM；失败画面最早 3 秒后重试。
-- `VlmServerClient` 以质量 72 编码 JPEG，将原始字节 POST 到编译期配置的 `VLM_SERVER_URL/v1/analyze`，并通过请求头报告图片尺寸、扫描比例、手机编码耗时和客户端请求 ID。局域网开发协议使用明文 HTTP。
+- `VlmServerClient` 以质量 72 编码 JPEG，将原始字节 POST 到编译期配置的 `VLM_SERVER_URL/v1/analyze`，并通过请求头报告图片尺寸、扫描比例、手机编码耗时和客户端请求 ID。`RequestSigner` 以编译期 `SHARED_SECRET` 对方法、路径、时间戳、请求 ID 和 SHA-256 正文摘要做 HMAC-SHA256 签名。开发协议仍允许明文 HTTP。
 - 云端分析在途时，捕获线程仍以相同指纹监测订单区域。检测到变化便取消当前 `HttpURLConnection`、释放客户端分析槽位，并异步调用 `/v1/cancel`；双工作线程允许新稳定页面不必排在正在退出的旧连接后面。只有仍持有 active call 身份的请求可以更新 UI。
 - `VlmOrderResponseParser` 校验订单数值范围、归一化卡片框、`is_fully_visible` 和空的 `occluded_fields`。完整订单还必须同时具有起终点可见原文；地址规范化不得产生过大的长度变化。残缺卡片保留用于诊断，但不会参与排序和提醒。
 - 原生悬浮窗由 Service 直接更新，因此切换到司机端后不依赖 Flutter Activity 保持在前台。
@@ -27,12 +27,12 @@
 
 ## Data and safety boundaries
 
-- Python `ThreadingHTTPServer` 提供 `GET /health`、`POST /v1/analyze` 和 `POST /v1/cancel`。服务端把 JPEG 转为 Base64，以 JSON Mode 调用 DashScope，并将视觉输入限制为最多 1,310,720 像素（1280 视觉 Token）。取消状态按请求 ID 跨 handler 共享；已发往 DashScope 的非流式推理不保证能在云端立刻终止，但返回后会立即丢弃，且不会继续调用高德或回传旧结果，新请求可由另一服务端线程并行开始。
+- Python `ThreadingHTTPServer` 提供公开且无云端成本的 `GET /health`，以及必须通过 `SharedSecretAuthenticator` 的 `POST /v1/analyze` 和 `POST /v1/cancel`。服务端先验证正文摘要、±5 分钟时间窗和请求 ID 重放，通过后才把 JPEG 转为 Base64，以 JSON Mode 调用 DashScope，并将视觉输入限制为最多 1,310,720 像素（1280 视觉 Token）。取消状态按请求 ID 跨 handler 共享；已发往 DashScope 的非流式推理不保证能在云端立刻终止，但返回后会立即丢弃，且不会继续调用高德或回传旧结果，新请求可由另一服务端线程并行开始。
 - `AmapOrderEnricher` 将 WGS84 GPS 转为高德坐标，优先直接地理编码 VLM 地址，失败时才取附近 POI 首个结果。Mock 阶段不依据平台公里数消歧或拒绝路线。对每张完整订单调用两次路径规划 2.0（策略 32、`show_fields=cost,tmcs`），分别保留道路里程、耗时、畅通/缓行/拥堵/严重拥堵分段、红绿灯、收费金额、收费里程和主要收费道路。不同订单可并行推进，但 `AmapClient` 按服务类别将真实请求间隔限制为至少 380 ms，以适配个人认证默认 3 QPS；10021 另做最多两次退避重试。
 - 服务端把高德接驾秒数、固定 3 分钟等客、高德载客秒数相加，以原始秒数计算有效时薪；UI 分钟数单独向上取整。高德故障只令订单 `route_status=route_failed`，不丢弃 VLM 结构。
 - 服务端日志输出终端与 5 MB 滚动文件，记录请求 ID、客户端 IP、字节数、DashScope 与高德分段耗时、成功算路数、Token、DashScope 请求 ID 与完整订单 JSON；不记录图片、精确 GPS 或 API Key。
 - 屏幕 Bitmap/JPEG 只在内存中存活到单次请求完成；客户端与服务端均不保存图片。
-- Android Gradle 只把根目录 `.env` 的 `VLM_SERVER_URL` 编译进 APK。DashScope 与高德 Key 仅由 Python 服务运行时读取。
+- Android Gradle 把根目录 `.env` 的 `VLM_SERVER_URL` 和测试期 `SHARED_SECRET` 编译进 APK。DashScope 与高德 Key 仅由 Python 服务运行时读取。签名阻止机会性未授权调用，但不提供传输加密，也无法防止从 APK 提取共享密钥。
 - 只读取屏幕和显示结果；没有 Accessibility Service、输入注入、Hook 或网约车私有 API。
 - Android 14+ 的 MediaProjection Intent 不会被缓存或复用，每次会话都经过系统授权。
 - 只有 `route_status=ok` 的高德路线结果才能显示有效时薪；不得把地点或路线失败的订单回退为平均速度估算。

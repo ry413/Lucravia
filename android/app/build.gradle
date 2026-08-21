@@ -18,6 +18,14 @@ if ((vlmServerUrl.startsWith('"') && vlmServerUrl.endsWith('"')) ||
 def escapedVlmServerUrl = vlmServerUrl
         .replace("\\", "\\\\")
         .replace('"', '\\"')
+def sharedSecret = envProperties.getProperty("SHARED_SECRET", "").trim()
+if ((sharedSecret.startsWith('"') && sharedSecret.endsWith('"')) ||
+        (sharedSecret.startsWith("'") && sharedSecret.endsWith("'"))) {
+    sharedSecret = sharedSecret.substring(1, sharedSecret.length() - 1)
+}
+def escapedSharedSecret = sharedSecret
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
 
 android {
     namespace = "com.cheatcat.cheat_cat"
@@ -47,6 +55,7 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         buildConfigField "String", "VLM_SERVER_URL", "\"${escapedVlmServerUrl}\""
+        buildConfigField "String", "SHARED_SECRET", "\"${escapedSharedSecret}\""
     }
 
     buildTypes {

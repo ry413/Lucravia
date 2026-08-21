@@ -84,7 +84,9 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
 
   Future<void> _start() async {
     if (!_vlmServerConfigured) {
-      _showError('请在工程根目录 .env 配置 VLM_SERVER_URL 后重新构建');
+      _showError(
+        '请在工程根目录 .env 配置 VLM_SERVER_URL 和 SHARED_SECRET 后重新构建',
+      );
       return;
     }
     if (!_overlayGranted) {
@@ -159,8 +161,8 @@ class _AnalyzerHomeScreenState extends State<AnalyzerHomeScreen>
               number: '1',
               title: '局域网 VLM 服务',
               description: _vlmServerConfigured
-                  ? '已从工程根目录 .env 编译服务地址。'
-                  : '未配置 VLM_SERVER_URL；写入 .env 后需要重新构建 APK。',
+                  ? '已从工程根目录 .env 编译服务地址和请求签名密钥。'
+                  : '未配置 VLM_SERVER_URL 或 SHARED_SECRET；写入 .env 后需要重新构建 APK。',
               complete: _vlmServerConfigured,
               actionLabel: '检查 .env',
               onPressed: null,

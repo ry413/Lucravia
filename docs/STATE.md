@@ -9,13 +9,13 @@
 - Flutter 主界面是权限和分析控制台，不再模仿网约车订单大厅。
 - 用户授权悬浮窗并确认系统屏幕捕获后，原生前台服务持续获取屏幕帧。
 - 用户授予前台定位权限；启动前取得较新位置，分析服务运行时持续更新 GPS/网络位置。
-- Android Gradle 从根目录 `.env` 读取 `VLM_SERVER_URL` 并编译进 `BuildConfig`；DashScope Key 不进入 APK。
+- Android Gradle 从根目录 `.env` 读取 `VLM_SERVER_URL` 和测试期 `SHARED_SECRET` 并编译进 `BuildConfig`；DashScope/高德 Key 不进入 APK。
 - 前台服务约每 450 ms 生成一次 64×64 亮度指纹，排除顶部 18% 与底部 8%；连续两帧稳定且与上次提交不同才发送截图。
 - 校准先显示小型启动浮窗，让用户可正常打开目标 App；点击后才进入全屏拖动模式，并可在目标页面保存或取消。区域以归一化比例持久化；未校准时默认完整屏幕。
 - 截图先裁出保存区域，再缩放到最大 720 px 宽并以质量 72 压成 JPEG，以原始字节 POST 到局域网 Python 服务 `/v1/analyze`；请求头记录实际尺寸、扫描比例和手机编码耗时。
 - Python 服务从根目录 `.env` 读取 DashScope Key，将 JPEG 转 Base64，关闭思考并以 JSON Mode 调用 `qwen3.7-flash`。
 - 服务端将 `max_pixels` 限为 1,310,720（1280 视觉 Token），避免后续设备尺寸变化意外增加视觉输入。
-- 服务端提供 `/health`；终端和滚动文件记录请求 ID、客户端 IP、图片大小、局域网接收/构造请求/DashScope 往返/JSON 解析分段耗时、Token、DashScope 请求 ID和完整订单 JSON。
+- 服务端提供公开无成本的 `/health`；两个 POST 端点必须通过 HMAC-SHA256 共享密钥签名、±5 分钟时间窗和重放检查，未授权请求在调用 DashScope/高德前返回 401。终端和滚动文件记录请求 ID、客户端 IP、图片大小、局域网接收/构造请求/DashScope 往返/JSON 解析分段耗时、Token、DashScope 请求 ID和完整订单 JSON。
 - 同一设备逻辑上最多一个有效请求；静态页面不重复调用，失败画面最早 3 秒后重试。在途期间仍在本地监测订单区，变化后立即取消客户端连接、释放槽位并等待新页面稳定，不再等旧 VLM 返回才发现过期。
 - 运行时不再显示固定大型结果窗；保留一个可拖动的小状态胶囊，显示等待稳定、识别中、结果和错误阶段。浮窗实时位置从画面指纹中屏蔽，且不使用 `FLAG_SECURE`，用户可以正常系统截屏。
 - 服务端把 GPS 转为高德坐标，Mock 阶段直接地理编码地址、失败才取附近首个 POI，不使用 Mock 平台里程消歧；再用路径规划 2.0 策略 32 计算当前位置→上车点与上车点→目的地。有效时薪按两段原始秒数 + 固定 3 分钟等客计算；`cost,tmcs` 同时提供两段道路里程、路况分段、红绿灯和收费信息。
@@ -52,6 +52,7 @@
 - 扩展高德路线价值信息：真实 API 已验证能返回路线红绿灯、收费和 `tmcs` 路况分段；服务端分别聚合接驾/载客段的拥堵、严重拥堵和缓行里程，Android 评价窗与 Flutter 详情页同步展示，并扩大防反馈掩码覆盖评价标签。
 - 将卡片评价从开发式缩写改为新用户可直接理解的完整中文六行文案，新增独立纯 Kotlin 格式化器与精确文本回归测试，并同步扩大评价窗及其防反馈区域。
 - 初始化 `main` Git 仓库；首次提交排除 `.env`、服务端日志、构建缓存、APK、IDE 配置和签名文件，同时纳入 Gradle Wrapper 以支持新机器复现构建。README 记录远程仓库与 VPS clone/pull 流程及公网部署安全边界。
+- 增加测试期共享密钥请求签名：Android 和 Python 使用同一 canonical request 与 HMAC-SHA256，正文、路径和请求 ID 均受保护；过期、伪造和重放请求被拒绝。Kotlin/Python 固定向量回归测试确保两端格式一致。
 
 ## In progress / next work
 
@@ -67,7 +68,7 @@
 - 等客时间当前固定 3 分钟，尚未按城市、时段或用户习惯配置。
 - VLM 提示词刻意只支持目标司机端当前 UI；不承诺支持其他平台或后续 UI 版本。
 - 稳定的新订单截图会经过局域网服务上传至 DashScope；服务端不保存图片。
-- 当前局域网 HTTP 服务没有 TLS、客户端鉴权、限流或持久化指标，只能用于可信开发网络，不能暴露到公网。
+- 当前 HTTP 服务已有测试期共享密钥验签，可拦截不知密钥的公网扫描与云 API 刷请求；但仍没有 TLS、限流或可撤销的设备身份。密钥可从 APK 提取，而且明文 HTTP 会暴露截图和定位；公网测试仍应配 HTTPS。
 - 自动化环境没有连接 Android 真机或模拟器；真实 DashScope、高德接口及 MediaProjection/悬浮窗行为依赖用户真机回归。
 - VLM 卡片框是粗定位；坐标无效的订单只保留在 Flutter 结构化结果中，不在司机端页面绘制评价框。
 - 小状态胶囊仍会出现在发送给 VLM 的截图中；服务端提示词要求忽略它，但若物理遮住订单关键字段仍可能导致该订单不完整，应将胶囊拖到空白处。
@@ -81,7 +82,7 @@
 
 - `flutter analyze`：通过。
 - `flutter test`：Flutter 控制台 Widget 测试通过。
-- `python3 -m unittest server.test_server -v`：7 个 `.env`、DashScope payload、JSON、取消协议、高德与 HTTP 端点测试通过。
+- `python3 -m unittest server.test_server -v`：9 个 `.env`、DashScope payload、JSON、取消协议、HMAC 鉴权/重放、高德与 HTTP 端点测试通过。
 - `./gradlew testDebugUnitTest`：Android 画面指纹、稳定帧去重、滚动停止、失败退避、多订单与坐标 JSON 解析、提醒框防反馈测试通过。
 - `flutter build apk --debug`：通过。
 
@@ -96,6 +97,7 @@
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/MainActivity.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/ScreenCaptureService.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/VlmServerClient.kt`
+- `android/app/src/main/kotlin/com/cheatcat/cheat_cat/RequestSigner.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/VlmOrderResponseParser.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/StableFrameGate.kt`
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/OrderModels.kt`

@@ -133,7 +133,12 @@ class ScreenCaptureService : Service() {
         }
         this.driverLatitude = driverLatitude
         this.driverLongitude = driverLongitude
-        vlmClient = VlmServerClient(serverUrl)
+        val sharedSecret = BuildConfig.SHARED_SECRET.trim()
+        if (sharedSecret.length < 32) {
+            stopAnalysis("缺少客户端共享密钥")
+            return
+        }
+        vlmClient = VlmServerClient(serverUrl, sharedSecret)
         startLocationUpdates()
         scanRegion = ScanRegionPreferences.load(this).region
         scanRegion.fingerprintRatios(

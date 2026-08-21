@@ -48,7 +48,8 @@ class MainActivity : FlutterActivity() {
                                 "locationGranted" to hasLocationPermission(),
                                 "running" to ScreenCaptureService.isRunning,
                                 "vlmServerConfigured" to
-                                    BuildConfig.VLM_SERVER_URL.isNotBlank(),
+                                    (BuildConfig.VLM_SERVER_URL.isNotBlank() &&
+                                        BuildConfig.SHARED_SECRET.trim().length >= 32),
                                 "scanRegionConfigured" to storedRegion.configured,
                                 "scanTopRatio" to storedRegion.region.topRatio,
                                 "scanBottomRatio" to storedRegion.region.bottomRatio,
@@ -76,10 +77,14 @@ class MainActivity : FlutterActivity() {
                     }
                     "startCapture" -> {
                         val serverUrl = BuildConfig.VLM_SERVER_URL.trim()
-                        if (serverUrl.isEmpty()) {
+                        if (
+                            serverUrl.isEmpty() ||
+                            BuildConfig.SHARED_SECRET.trim().length < 32
+                        ) {
                             result.error(
                                 "server_url_required",
-                                "请在工程根目录 .env 配置 VLM_SERVER_URL 后重新构建",
+                                "请在工程根目录 .env 配置 VLM_SERVER_URL 和 " +
+                                    "SHARED_SECRET 后重新构建",
                                 null,
                             )
                         } else if (!Settings.canDrawOverlays(this)) {

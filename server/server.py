@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
+import hmac
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -14,7 +16,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-import uuid
 
 try:
     from server.amap import AmapClient, AmapOrderEnricher, Point
@@ -29,6 +30,7 @@ DASHSCOPE_ENDPOINT = (
 )
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 MAX_VISION_PIXELS = 1_310_720  # 1280 visual tokens at 32x32 pixels/token.
+SIGNATURE_MAX_AGE_SECONDS = 300
 
 PROMPT = """你是网约车司机端订单截图解析器。忽略状态栏、刷新倒计时、底部导航和“跑单助手”悬浮窗。
 识别画面中每一张订单卡片，严格保持从上到下顺序，禁止把相邻卡片的字段混合。
@@ -133,6 +135,75 @@ class CancellationRegistry:
             self._requests.pop(request_id, None)
 
 
+def sign_request(
+    secret: str,
+    method: str,
+    path: str,
+    timestamp: str,
+    request_id: str,
+    body: bytes,
+) -> str:
+    body_hash = hashlib.sha256(body).hexdigest()
+    canonical = "\n".join(
+        (method.upper(), path, timestamp, request_id, body_hash)
+    ).encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+
+
+class SharedSecretAuthenticator:
+    """Validates short-lived HMAC signatures and rejects exact replays."""
+
+    def __init__(
+        self,
+        secret: str,
+        max_age_seconds: int = SIGNATURE_MAX_AGE_SECONDS,
+        time_provider: Any = time.time,
+    ) -> None:
+        self.secret = secret
+        self.max_age_seconds = max_age_seconds
+        self.time_provider = time_provider
+        self._lock = threading.Lock()
+        self._seen: dict[tuple[str, str, str], float] = {}
+
+    def verify(
+        self,
+        method: str,
+        path: str,
+        timestamp: str,
+        request_id: str,
+        body: bytes,
+        signature: str,
+    ) -> bool:
+        try:
+            timestamp_number = int(timestamp)
+        except (TypeError, ValueError):
+            return False
+        now = float(self.time_provider())
+        if abs(now - timestamp_number) > self.max_age_seconds:
+            return False
+        expected = sign_request(
+            self.secret,
+            method,
+            path,
+            timestamp,
+            request_id,
+            body,
+        )
+        if not hmac.compare_digest(expected, signature):
+            return False
+        replay_key = (path, timestamp, request_id)
+        with self._lock:
+            self._seen = {
+                key: expires_at
+                for key, expires_at in self._seen.items()
+                if expires_at >= now
+            }
+            if replay_key in self._seen:
+                return False
+            self._seen[replay_key] = now + self.max_age_seconds
+        return True
+
+
 class DashScopeClient:
     def __init__(self, api_key: str, timeout_seconds: int = 60) -> None:
         self.api_key = api_key
@@ -220,6 +291,7 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
     route_enricher: AmapOrderEnricher | None = None
     logger: logging.Logger
     cancellations = CancellationRegistry()
+    authenticator: SharedSecretAuthenticator
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path != "/health":
@@ -238,7 +310,14 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/cancel":
             request_id = self.headers.get("X-Request-Id", "")
             if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id):
-                self._json_response(400, {"error": "invalid_request_id"})
+                self._unauthorized(request_id)
+                return
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except (TypeError, ValueError):
+                length = -1
+            if length != 0 or not self._authenticate(request_id, b""):
+                self._unauthorized(request_id)
                 return
             self.cancellations.cancel(request_id)
             self.logger.info("request_cancel_signal request_id=%s", request_id)
@@ -248,11 +327,7 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
             self._json_response(404, {"error": "not_found"})
             return
         client_request_id = self.headers.get("X-Request-Id", "")
-        request_id = (
-            client_request_id
-            if re.fullmatch(r"[A-Za-z0-9_-]{8,64}", client_request_id)
-            else uuid.uuid4().hex[:12]
-        )
+        request_id = client_request_id
         started = time.monotonic()
         content_type = self.headers.get("Content-Type", "")
         try:
@@ -273,6 +348,12 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
             return
 
         image_bytes = self.rfile.read(length)
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", request_id)
+            or not self._authenticate(request_id, image_bytes)
+        ):
+            self._unauthorized(request_id)
+            return
         cancelled = self.cancellations.register(request_id)
         received_at = time.monotonic()
         capture_width = self.headers.get("X-Capture-Width", "-")
@@ -382,6 +463,25 @@ class VlmRequestHandler(BaseHTTPRequestHandler):
             return None
         return Point(longitude=longitude, latitude=latitude)
 
+    def _authenticate(self, request_id: str, body: bytes) -> bool:
+        return self.authenticator.verify(
+            method="POST",
+            path=self.path,
+            timestamp=self.headers.get("X-Request-Timestamp", ""),
+            request_id=request_id,
+            body=body,
+            signature=self.headers.get("X-Request-Signature", ""),
+        )
+
+    def _unauthorized(self, request_id: str) -> None:
+        self.logger.warning(
+            "request_unauthorized client=%s path=%s request_id=%s",
+            self.client_address[0],
+            self.path,
+            request_id or "-",
+        )
+        self._json_response(401, {"error": "unauthorized"})
+
     def log_message(self, _format: str, *args: object) -> None:
         return
 
@@ -407,10 +507,14 @@ def main() -> None:
     amap_api_key = env.get("AMAP_API_KEY", "").strip()
     if not amap_api_key:
         raise SystemExit("缺少 AMAP_API_KEY：请配置高德 Web 服务 API Key")
+    shared_secret = env.get("SHARED_SECRET", "").strip()
+    if len(shared_secret) < 32:
+        raise SystemExit("缺少 SHARED_SECRET：请配置至少 32 个字符的共享密钥")
 
     logger = configure_logging()
     VlmRequestHandler.client = DashScopeClient(api_key)
     VlmRequestHandler.route_enricher = AmapOrderEnricher(AmapClient(amap_api_key))
+    VlmRequestHandler.authenticator = SharedSecretAuthenticator(shared_secret)
     VlmRequestHandler.logger = logger
     server = ThreadingHTTPServer((args.host, args.port), VlmRequestHandler)
     logger.info(

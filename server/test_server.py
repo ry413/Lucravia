@@ -3,8 +3,10 @@ import logging
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from urllib.parse import parse_qs, urlparse
 
@@ -13,11 +15,32 @@ from server.amap import AmapClient, AmapOrderEnricher, Point
 from server.server import (
     CancellationRegistry,
     MAX_VISION_PIXELS,
+    SharedSecretAuthenticator,
     VlmRequestHandler,
     build_dashscope_payload,
     load_env,
     parse_model_content,
+    sign_request,
 )
+
+
+TEST_SHARED_SECRET = "test-shared-secret-with-at-least-32-chars"
+
+
+def signed_headers(path: str, body: bytes, request_id: str) -> dict[str, str]:
+    timestamp = str(int(time.time()))
+    return {
+        "X-Request-Id": request_id,
+        "X-Request-Timestamp": timestamp,
+        "X-Request-Signature": sign_request(
+            TEST_SHARED_SECRET,
+            "POST",
+            path,
+            timestamp,
+            request_id,
+            body,
+        ),
+    }
 
 
 class ServerTest(unittest.TestCase):
@@ -69,6 +92,7 @@ class ServerTest(unittest.TestCase):
 
         fake = FakeClient()
         VlmRequestHandler.client = fake
+        VlmRequestHandler.authenticator = SharedSecretAuthenticator(TEST_SHARED_SECRET)
         VlmRequestHandler.logger = logging.getLogger("server_test")
         server = ThreadingHTTPServer(("127.0.0.1", 0), VlmRequestHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -79,11 +103,13 @@ class ServerTest(unittest.TestCase):
                 health = json.load(response)
             self.assertEqual("ok", health["status"])
 
+            headers = {"Content-Type": "image/jpeg"}
+            headers.update(signed_headers("/v1/analyze", b"jpeg", "analyze-test-123"))
             request = Request(
                 f"{base_url}/v1/analyze",
                 data=b"jpeg",
                 method="POST",
-                headers={"Content-Type": "image/jpeg"},
+                headers=headers,
             )
             with urlopen(request) as response:
                 result = json.load(response)
@@ -109,6 +135,7 @@ class ServerTest(unittest.TestCase):
         VlmRequestHandler.client = fake
         VlmRequestHandler.route_enricher = None
         VlmRequestHandler.cancellations = CancellationRegistry()
+        VlmRequestHandler.authenticator = SharedSecretAuthenticator(TEST_SHARED_SECRET)
         VlmRequestHandler.logger = logging.getLogger("server_cancel_test")
         server = ThreadingHTTPServer(("127.0.0.1", 0), VlmRequestHandler)
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -117,14 +144,15 @@ class ServerTest(unittest.TestCase):
         analyze_result = {}
 
         def analyze() -> None:
+            headers = {"Content-Type": "image/jpeg"}
+            headers.update(
+                signed_headers("/v1/analyze", b"jpeg", "cancel-test-123")
+            )
             request = Request(
                 f"{base_url}/v1/analyze",
                 data=b"jpeg",
                 method="POST",
-                headers={
-                    "Content-Type": "image/jpeg",
-                    "X-Request-Id": "cancel-test-123",
-                },
+                headers=headers,
             )
             try:
                 urlopen(request)
@@ -139,7 +167,7 @@ class ServerTest(unittest.TestCase):
                 f"{base_url}/v1/cancel",
                 data=b"",
                 method="POST",
-                headers={"X-Request-Id": "cancel-test-123"},
+                headers=signed_headers("/v1/cancel", b"", "cancel-test-123"),
             )
             with urlopen(cancel_request) as response:
                 self.assertEqual(202, response.status)
@@ -151,6 +179,82 @@ class ServerTest(unittest.TestCase):
             server.shutdown()
             server.server_close()
             server_thread.join(timeout=2)
+
+    def test_shared_secret_rejects_invalid_stale_and_replayed_signatures(self) -> None:
+        authenticator = SharedSecretAuthenticator(
+            TEST_SHARED_SECRET,
+            max_age_seconds=300,
+            time_provider=lambda: 1_000,
+        )
+        body = b"jpeg"
+        valid = sign_request(
+            TEST_SHARED_SECRET,
+            "POST",
+            "/v1/analyze",
+            "1000",
+            "signed-test-123",
+            body,
+        )
+
+        self.assertFalse(
+            authenticator.verify(
+                "POST", "/v1/analyze", "1000", "signed-test-123", body, "bad"
+            )
+        )
+        self.assertFalse(
+            authenticator.verify(
+                "POST",
+                "/v1/analyze",
+                "699",
+                "stale-test-123",
+                body,
+                sign_request(
+                    TEST_SHARED_SECRET,
+                    "POST",
+                    "/v1/analyze",
+                    "699",
+                    "stale-test-123",
+                    body,
+                ),
+            )
+        )
+        self.assertTrue(
+            authenticator.verify(
+                "POST", "/v1/analyze", "1000", "signed-test-123", body, valid
+            )
+        )
+        self.assertFalse(
+            authenticator.verify(
+                "POST", "/v1/analyze", "1000", "signed-test-123", body, valid
+            )
+        )
+
+    def test_unsigned_analyze_is_rejected_before_dashscope(self) -> None:
+        class FailIfCalledClient:
+            def analyze(self, _image_bytes: bytes, cancelled=None):
+                raise AssertionError("unauthorized request reached DashScope")
+
+        VlmRequestHandler.client = FailIfCalledClient()
+        VlmRequestHandler.route_enricher = None
+        VlmRequestHandler.authenticator = SharedSecretAuthenticator(TEST_SHARED_SECRET)
+        VlmRequestHandler.logger = logging.getLogger("server_auth_test")
+        server = ThreadingHTTPServer(("127.0.0.1", 0), VlmRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            request = Request(
+                f"http://127.0.0.1:{server.server_port}/v1/analyze",
+                data=b"jpeg",
+                method="POST",
+                headers={"Content-Type": "image/jpeg"},
+            )
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(request)
+            self.assertEqual(401, caught.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
     def test_amap_enrichment_uses_two_real_routes_for_hourly_income(self) -> None:
         def fake_transport(url: str):

@@ -6,7 +6,7 @@
 
 ## 当前可运行链路
 
-1. 将 `.env.example` 复制为工程根目录 `.env`，填写服务端使用的 `DASHSCOPE_API_KEY` 与高德 Web 服务类型 `AMAP_API_KEY`，并把 `VLM_SERVER_URL` 改成服务端电脑的局域网 IP。
+1. 将 `.env.example` 复制为工程根目录 `.env`，填写服务端使用的 `DASHSCOPE_API_KEY` 与高德 Web 服务类型 `AMAP_API_KEY`，并把 `VLM_SERVER_URL` 改成服务端地址。再生成一个至少 32 字符的 `SHARED_SECRET`；Android 构建与 Python 服务必须使用同一个值。
 2. 运行 `python3 server/server.py`，确认手机能访问 `http://服务端IP:8765/health`。
 3. 重新构建并安装 APK，授予“显示在其他应用上层”和定位权限；定位仅用于当前位置到上车点的接驾路线，分析前台服务运行时会持续更新。
 4. 可选但推荐先校准识图区域：在助手点击“校准识图区域”后会出现一个小型“开始校准”悬浮按钮；此时屏幕其他位置仍可操作。打开目标订单页并点该按钮，再拖动上下绿线保存或取消。宽度固定为整屏，区域最小高度为屏幕 25%。
@@ -24,11 +24,11 @@
 
 网络失败时，同一稳定画面最早 3 秒后重试。Android 14 及更高版本要求每次新的屏幕捕获会话都由用户重新确认。
 
-屏幕帧不会由客户端或服务端写入图片文件，但稳定的新订单截图会经过局域网服务上传给 DashScope；当前位置与订单地址会由服务端发送给高德用于地点与路线查询。两个 API Key 都只由服务端从 `.env` 读取，不进入 APK。当前局域网 HTTP 协议没有鉴权或加密，只适合可信开发网络。
+屏幕帧不会由客户端或服务端写入图片文件，但稳定的新订单截图会经过服务上传给 DashScope；当前位置与订单地址会由服务端发送给高德用于地点与路线查询。两个 API Key 都只由服务端从 `.env` 读取，不进入 APK。Android 使用同一份 `SHARED_SECRET` 对请求方法、路径、时间戳、请求 ID 和图片摘要做 HMAC-SHA256 签名；服务端在调用云 API 前验签，并拒绝过期或重放请求。
 
 ## 重要限制
 
-VLM 提示词只针对当前截图中这一版司机端 UI。模型输出仍可能遗漏或误读，结果只能作为辅助信息。服务端目前没有账号、数据库或任务队列；正式部署时需要补充 HTTPS、客户端鉴权、限流和持久化指标。
+VLM 提示词只针对当前截图中这一版司机端 UI。模型输出仍可能遗漏或误读，结果只能作为辅助信息。共享密钥能阻止不知密钥的公网扫描器刷 DashScope/高德，但不是账号体系：有心人仍可从 APK 中提取密钥。HTTP 签名也不加密截图和定位，因此公网测试至少应使用 HTTPS；正式部署再补账号/设备鉴权、限流和持久化指标。
 
 Mock 阶段不会严格消歧同名地点，客户端会展示高德实际匹配名称供人工判断，因此路线结果仅用于验证产品链路。接入真实平台数据后再恢复基于当前位置和平台里程的候选审计。当前固定等客时间为 3 分钟，尚未开放用户配置。
 
@@ -48,7 +48,7 @@ Mock 阶段不会严格消歧同名地点，客户端会展示高德实际匹配
 
 ```bash
 cp .env.example .env
-# 编辑 DASHSCOPE_API_KEY 和 VLM_SERVER_URL
+# 编辑 DASHSCOPE_API_KEY、AMAP_API_KEY、VLM_SERVER_URL 和 SHARED_SECRET
 python3 server/server.py
 python3 -m unittest server.test_server -v
 
@@ -81,12 +81,13 @@ git clone <你的 Git 仓库地址> cheat_cat
 cd cheat_cat
 cp .env.example .env
 # 在 VPS 单独填写 .env，密钥不会由 Git 同步
+# SHARED_SECRET 必须与构建测试 APK 时的值一致
 
 # 后续只拉取快进更新
 git pull --ff-only
 ```
 
-当前 Python HTTP 服务没有鉴权或 TLS。同步到 VPS 后不要直接把 8765 端口开放给公网；应限制在防火墙/VPN 私网内，或置于带 HTTPS 和客户端鉴权的反向代理后面。
+当前 Python 服务已对两个 POST 端点做共享密钥 HMAC 验签；未签名请求会在触发 DashScope/高德费用前返回 401。`GET /health` 保持公开且不调用云 API。若将 8765 端口暴露公网，仍建议在反向代理上启用 HTTPS，防止截图与定位被窃听。
 
 ## 重要代码
 
@@ -94,6 +95,7 @@ git pull --ff-only
 - `lib/platform/screen_analyzer.dart`：Flutter 与 Android 之间的通信边界。
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/ScreenCaptureService.kt`：屏幕捕获、稳定画面调度、悬浮窗和前台服务。
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/VlmServerClient.kt`：JPEG 压缩和局域网服务请求。
+- `android/app/src/main/kotlin/com/cheatcat/cheat_cat/RequestSigner.kt`：与 Python 服务一致的 HMAC-SHA256 请求签名。
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/VlmOrderResponseParser.kt`：结构化订单 JSON 校验与解析。
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/StableFrameGate.kt`：滚动静止检测、画面去重和失败退避。
 - `android/app/src/main/kotlin/com/cheatcat/cheat_cat/OrderHighlightOverlay.kt`：前三张订单的安全窄边框和评价标签。

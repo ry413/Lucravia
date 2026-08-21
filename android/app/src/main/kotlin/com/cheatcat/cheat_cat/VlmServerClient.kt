@@ -10,7 +10,7 @@ import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-class VlmServerClient(serverUrl: String) {
+class VlmServerClient(serverUrl: String, private val sharedSecret: String) {
     companion object {
         private const val JPEG_QUALITY = 72
     }
@@ -81,6 +81,7 @@ class VlmServerClient(serverUrl: String) {
                 setRequestProperty("Accept", "application/json")
                 setRequestProperty("X-Cheat-Cat-Client", "android")
                 setRequestProperty("X-Request-Id", requestId)
+                setSignedHeaders("/v1/analyze", requestId, jpeg)
                 setRequestProperty("X-Capture-Width", bitmap.width.toString())
                 setRequestProperty("X-Capture-Height", bitmap.height.toString())
                 setRequestProperty("X-Jpeg-Quality", JPEG_QUALITY.toString())
@@ -133,12 +134,33 @@ class VlmServerClient(serverUrl: String) {
             doOutput = true
             setFixedLengthStreamingMode(0)
             setRequestProperty("X-Request-Id", requestId)
+            setSignedHeaders("/v1/cancel", requestId, ByteArray(0))
         }
         try {
             cancellation.responseCode
         } finally {
             cancellation.disconnect()
         }
+    }
+
+    private fun HttpURLConnection.setSignedHeaders(
+        path: String,
+        requestId: String,
+        body: ByteArray,
+    ) {
+        val timestamp = System.currentTimeMillis() / 1000
+        setRequestProperty("X-Request-Timestamp", timestamp.toString())
+        setRequestProperty(
+            "X-Request-Signature",
+            RequestSigner.sign(
+                secret = sharedSecret,
+                method = "POST",
+                path = path,
+                timestampSeconds = timestamp,
+                requestId = requestId,
+                body = body,
+            ),
+        )
     }
 
     private fun serverErrorMessage(status: Int, body: String): String {

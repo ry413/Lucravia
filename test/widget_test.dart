@@ -43,7 +43,7 @@ void main() {
 
     expect(find.text('局域网 VLM 订单价值分析'), findsOneWidget);
     expect(find.text('局域网 VLM 服务'), findsOneWidget);
-    expect(find.textContaining('已从工程根目录 .env 编译服务地址'), findsOneWidget);
+    expect(find.textContaining('已从工程根目录 .env 编译服务地址和请求签名密钥'), findsOneWidget);
     expect(find.text('允许悬浮结果窗'), findsOneWidget);
     expect(find.text('校准识图区域'), findsOneWidget);
     expect(find.textContaining('18%–92%'), findsOneWidget);
