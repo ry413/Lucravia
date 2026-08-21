@@ -28,11 +28,11 @@
 ## Data and safety boundaries
 
 - Python `ThreadingHTTPServer` 提供公开且无云端成本的 `GET /health`，以及必须通过 `SharedSecretAuthenticator` 的 `POST /v1/analyze` 和 `POST /v1/cancel`。服务端先验证正文摘要、±5 分钟时间窗和请求 ID 重放，通过后才把 JPEG 转为 Base64，以 JSON Mode 调用 DashScope，并将视觉输入限制为最多 1,310,720 像素（1280 视觉 Token）。取消状态按请求 ID 跨 handler 共享；已发往 DashScope 的非流式推理不保证能在云端立刻终止，但返回后会立即丢弃，且不会继续调用高德或回传旧结果，新请求可由另一服务端线程并行开始。
-- `AmapOrderEnricher` 将 WGS84 GPS 转为高德坐标，优先直接地理编码 VLM 地址，失败时才取附近 POI 首个结果。Mock 阶段不依据平台公里数消歧或拒绝路线。对每张完整订单调用两次路径规划 2.0（策略 32、`show_fields=cost,tmcs`），分别保留道路里程、耗时、畅通/缓行/拥堵/严重拥堵分段、红绿灯、收费金额、收费里程和主要收费道路。不同订单可并行推进，但 `AmapClient` 按服务类别将真实请求间隔限制为至少 380 ms，以适配个人认证默认 3 QPS；10021 另做最多两次退避重试。
+- `AmapOrderEnricher` 将 WGS84 GPS 转为高德坐标。上车点以司机坐标为中心、目的地以上车点为中心搜索附近 POI，并用平台接驾/行程里程辅助候选选择；完整“POI-道路”查不到时再尝试 POI 主名，全国地理编码仅作最后回退。每段路径规划 2.0（策略 32、`show_fields=cost,tmcs`）完成后，会用 `max(5 km, 平台里程的 60%)` 宽松审计高德里程；冲突则标记 `route_mismatch`，不计算时薪、不进入推荐。接驾段失败时不再查询目的地。可信路线分别保留道路里程、耗时、畅通/缓行/拥堵/严重拥堵分段、红绿灯、收费金额、收费里程和主要收费道路。不同订单可并行推进，但 `AmapClient` 按服务类别将真实请求间隔限制为至少 380 ms，以适配个人认证默认 3 QPS；10021 另做最多两次退避重试。
 - 服务端把高德接驾秒数、固定 3 分钟等客、高德载客秒数相加，以原始秒数计算有效时薪；UI 分钟数单独向上取整。高德故障只令订单 `route_status=route_failed`，不丢弃 VLM 结构。
 - 服务端日志输出终端与 5 MB 滚动文件，记录请求 ID、客户端 IP、字节数、DashScope 与高德分段耗时、成功算路数、Token、DashScope 请求 ID 与完整订单 JSON；不记录图片、精确 GPS 或 API Key。
 - 屏幕 Bitmap/JPEG 只在内存中存活到单次请求完成；客户端与服务端均不保存图片。
 - Android Gradle 把根目录 `.env` 的 `VLM_SERVER_URL` 和测试期 `SHARED_SECRET` 编译进 APK。DashScope 与高德 Key 仅由 Python 服务运行时读取。签名阻止机会性未授权调用，但不提供传输加密，也无法防止从 APK 提取共享密钥。
 - 只读取屏幕和显示结果；没有 Accessibility Service、输入注入、Hook 或网约车私有 API。
 - Android 14+ 的 MediaProjection Intent 不会被缓存或复用，每次会话都经过系统授权。
-- 只有 `route_status=ok` 的高德路线结果才能显示有效时薪；不得把地点或路线失败的订单回退为平均速度估算。
+- 只有 `route_status=ok` 的高德路线结果才能显示有效时薪并进入卡片推荐框；`route_mismatch` 订单保留在详情中并明确显示地图匹配异常。不得把地点或路线失败的订单回退为平均速度估算。

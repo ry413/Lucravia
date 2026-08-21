@@ -204,8 +204,13 @@ data class VlmScreenAnalysis(
     val rankedCompleteOrders: List<ParsedOrder>
         get() = completeOrders.sortedByDescending { it.estimatedHourlyIncome ?: 0.0 }
 
+    val rankedRoutableOrders: List<ParsedOrder>
+        get() = completeOrders
+            .filter { it.routeStatus == "ok" && it.estimatedHourlyIncome != null }
+            .sortedByDescending { it.estimatedHourlyIncome }
+
     val bestOrder: ParsedOrder?
-        get() = rankedCompleteOrders.firstOrNull()
+        get() = rankedRoutableOrders.firstOrNull()
 
     fun toEvent(message: String): Map<String, Any> {
         val best = bestOrder

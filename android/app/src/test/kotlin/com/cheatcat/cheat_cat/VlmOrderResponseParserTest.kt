@@ -124,9 +124,30 @@ class VlmOrderResponseParserTest {
     }
 
     @Test
+    fun routeMismatchIsKeptForDetailsButNeverRecommended() {
+        val result = VlmOrderResponseParser.parse(
+            """
+            {"orders":[
+              {"screen_rank":1,"bbox_1000":[20,10,980,490],"is_fully_visible":true,"occluded_fields":[],"price":38.33,"pickup_distance_km":2.0,"pickup_minutes":5,"trip_distance_km":34.3,"pickup_name":"柏林建材","destination_name":"乐荟中心","route_status":"route_mismatch"},
+              {"screen_rank":2,"bbox_1000":[20,500,980,990],"is_fully_visible":true,"occluded_fields":[],"price":15.85,"pickup_distance_km":1.9,"pickup_minutes":6,"trip_distance_km":4.5,"pickup_name":"文记虾一跳","destination_name":"宝安大仟里","route_status":"ok","effective_hourly_income":37.64}
+            ]}
+            """.trimIndent(),
+        )
+
+        assertEquals(2, result.completeOrders.size)
+        assertEquals(1, result.rankedRoutableOrders.size)
+        assertEquals(15.85, result.bestOrder!!.price!!, 0.001)
+
+        @Suppress("UNCHECKED_CAST")
+        val orders = result.toEvent("ok")["orders"] as List<Map<String, Any>>
+        assertEquals(2, orders.size)
+        assertEquals("route_mismatch", orders.last()["routeStatus"])
+    }
+
+    @Test
     fun rejectsInvalidBoundingBoxWithoutDiscardingOrder() {
         val result = VlmOrderResponseParser.parse(
-            """{"orders":[{"screen_rank":1,"bbox_1000":[900,100,100,500],"is_fully_visible":true,"occluded_fields":[],"price":20,"pickup_distance_km":1,"pickup_minutes":2,"trip_distance_km":6,"pickup_name":"甲地","destination_name":"乙地"}]}""",
+            """{"orders":[{"screen_rank":1,"bbox_1000":[900,100,100,500],"is_fully_visible":true,"occluded_fields":[],"price":20,"pickup_distance_km":1,"pickup_minutes":2,"trip_distance_km":6,"pickup_name":"甲地","destination_name":"乙地","route_status":"ok","effective_hourly_income":60}]}""",
         )
 
         assertEquals(1, result.completeOrders.size)
@@ -149,7 +170,7 @@ class VlmOrderResponseParserTest {
     @Test
     fun usesConservativeNormalizedAddress() {
         val result = VlmOrderResponseParser.parse(
-            """{"orders":[{"is_fully_visible":true,"occluded_fields":[],"price":20,"pickup_distance_km":1,"pickup_minutes":2,"trip_distance_km":6,"pickup_name":"科技技园","pickup_name_normalized":"科技园","destination_name":"南山 区","destination_name_normalized":"南山区"}]}""",
+            """{"orders":[{"is_fully_visible":true,"occluded_fields":[],"price":20,"pickup_distance_km":1,"pickup_minutes":2,"trip_distance_km":6,"pickup_name":"科技技园","pickup_name_normalized":"科技园","destination_name":"南山 区","destination_name_normalized":"南山区","route_status":"ok","effective_hourly_income":60}]}""",
         )
 
         assertEquals("科技园", result.bestOrder!!.pickupName)

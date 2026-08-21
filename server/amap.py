@@ -13,9 +13,15 @@ from urllib.request import urlopen
 
 AMAP_ROOT = "https://restapi.amap.com"
 WAITING_MINUTES = 3
+ROUTE_DISTANCE_MIN_TOLERANCE_KM = 5.0
+ROUTE_DISTANCE_RELATIVE_TOLERANCE = 0.6
 
 
 class AmapError(RuntimeError):
+    pass
+
+
+class RouteDistanceMismatch(AmapError):
     pass
 
 
@@ -68,35 +74,38 @@ class AmapClient:
     ) -> PlaceCandidate:
         if expected_distance_km is not None and expected_distance_km > 48:
             return self.geocode(keyword)
-        data = self._get(
-            "/v3/place/around",
-            {
-                "location": center.parameter(),
-                "keywords": keyword,
-                "radius": 50000,
-                "sortrule": "distance",
-                "offset": 20,
-                "extensions": "base",
-            },
-        )
         candidates: list[PlaceCandidate] = []
-        for item in data.get("pois") or []:
-            if not isinstance(item, dict):
-                continue
-            try:
-                point = parse_point(str(item.get("location", "")))
-            except (TypeError, ValueError):
-                continue
-            distance = number_or_none(item.get("distance"))
-            candidates.append(
-                PlaceCandidate(
-                    point=point,
-                    name=str(item.get("name") or keyword),
-                    poi_id=string_or_none(item.get("id")),
-                    distance_m=distance,
-                    adcode=string_or_none(item.get("adcode")),
-                )
+        for search_keyword in nearby_search_keywords(keyword):
+            data = self._get(
+                "/v3/place/around",
+                {
+                    "location": center.parameter(),
+                    "keywords": search_keyword,
+                    "radius": 50000,
+                    "sortrule": "distance",
+                    "offset": 20,
+                    "extensions": "base",
+                },
             )
+            for item in data.get("pois") or []:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    point = parse_point(str(item.get("location", "")))
+                except (TypeError, ValueError):
+                    continue
+                distance = number_or_none(item.get("distance"))
+                candidates.append(
+                    PlaceCandidate(
+                        point=point,
+                        name=str(item.get("name") or search_keyword),
+                        poi_id=string_or_none(item.get("id")),
+                        distance_m=distance,
+                        adcode=string_or_none(item.get("adcode")),
+                    )
+                )
+            if candidates:
+                break
         if not candidates:
             return self.geocode(keyword)
         if expected_distance_km is None:
@@ -111,13 +120,16 @@ class AmapClient:
             ),
         )
 
-    def resolve_address(self, address: str, fallback_center: Point) -> PlaceCandidate:
-        try:
-            return self.geocode(address)
-        except Exception:
-            # Mock addresses are only best-effort. Use Amap's first nearby match
-            # without comparing it with the mock platform distance.
-            return self.search_nearby(address, fallback_center, None)
+    def resolve_address(
+        self,
+        address: str,
+        fallback_center: Point,
+        expected_distance_km: float | None,
+    ) -> PlaceCandidate:
+        # Real driver cards already expose pickup and trip distances. Search around the known
+        # origin first so a generic road suffix cannot geocode to a same-named road in another
+        # city. Unrestricted geocoding remains only as a last resort and is audited after routing.
+        return self.search_nearby(address, fallback_center, expected_distance_km)
 
     def geocode(self, address: str) -> PlaceCandidate:
         data = self._get("/v3/geocode/geo", {"address": address})
@@ -298,13 +310,41 @@ class AmapOrderEnricher:
             destination_name = str(
                 order.get("destination_name_normalized") or order["destination_name"]
             )
-            pickup = self.client.resolve_address(pickup_name, driver)
-            destination = self.client.resolve_address(destination_name, pickup.point)
+            platform_pickup_km = number_or_none(order.get("pickup_distance_km"))
+            platform_trip_km = number_or_none(order.get("trip_distance_km"))
+            pickup = self.client.resolve_address(
+                pickup_name,
+                driver,
+                platform_pickup_km,
+            )
+            order["pickup_match_name"] = pickup.name
             pickup_route = self.client.driving(driver, pickup)
+            pickup_route_km = pickup_route["distance_meters"] / 1000
+            order["pickup_route_distance_km"] = round(pickup_route_km, 1)
+            validate_route_distance(
+                "接驾",
+                actual_km=pickup_route_km,
+                platform_km=platform_pickup_km,
+            )
+
+            # Do not spend another POI and route lookup after an obviously wrong pickup match.
+            destination = self.client.resolve_address(
+                destination_name,
+                pickup.point,
+                platform_trip_km,
+            )
+            order["destination_match_name"] = destination.name
             trip_route = self.client.driving(
                 pickup.point,
                 destination,
                 origin_id=pickup.poi_id,
+            )
+            trip_route_km = trip_route["distance_meters"] / 1000
+            order["trip_route_distance_km"] = round(trip_route_km, 1)
+            validate_route_distance(
+                "行程",
+                actual_km=trip_route_km,
+                platform_km=platform_trip_km,
             )
             pickup_seconds = pickup_route["duration_seconds"]
             trip_seconds = trip_route["duration_seconds"]
@@ -314,16 +354,10 @@ class AmapOrderEnricher:
                 "route_status": "ok",
                 "route_source": "amap_driving_v5",
                 "route_strategy": 32,
-                "pickup_match_name": pickup.name,
-                "destination_match_name": destination.name,
                 "pickup_route_minutes": math.ceil(pickup_seconds / 60),
-                "pickup_route_distance_km": round(
-                    pickup_route["distance_meters"] / 1000, 1
-                ),
+                "pickup_route_distance_km": round(pickup_route_km, 1),
                 "trip_route_minutes": math.ceil(trip_seconds / 60),
-                "trip_route_distance_km": round(
-                    trip_route["distance_meters"] / 1000, 1
-                ),
+                "trip_route_distance_km": round(trip_route_km, 1),
                 "waiting_minutes": WAITING_MINUTES,
                 "total_occupied_minutes": math.ceil(occupied_seconds / 60),
                 "effective_hourly_income": round(price / occupied_seconds * 3600, 2),
@@ -331,6 +365,9 @@ class AmapOrderEnricher:
             route_fields.update(route_detail_fields("pickup", pickup_route))
             route_fields.update(route_detail_fields("trip", trip_route))
             order.update(route_fields)
+        except RouteDistanceMismatch as error:
+            order["route_status"] = "route_mismatch"
+            order["route_error"] = str(error)
         except Exception as error:
             order["route_status"] = "route_failed"
             order["route_error"] = str(error)
@@ -340,6 +377,35 @@ class AmapOrderEnricher:
 def parse_point(value: str) -> Point:
     longitude, latitude = value.split(",", 1)
     return Point(float(longitude), float(latitude))
+
+
+def nearby_search_keywords(address: str) -> list[str]:
+    keywords = [address.strip()]
+    for separator in ("-", "—", "–"):
+        if separator in address:
+            poi_name = address.split(separator, 1)[0].strip()
+            if poi_name and poi_name not in keywords:
+                keywords.append(poi_name)
+            break
+    return keywords
+
+
+def validate_route_distance(
+    label: str,
+    actual_km: float,
+    platform_km: float | None,
+) -> None:
+    if platform_km is None or platform_km <= 0:
+        return
+    tolerance_km = max(
+        ROUTE_DISTANCE_MIN_TOLERANCE_KM,
+        platform_km * ROUTE_DISTANCE_RELATIVE_TOLERANCE,
+    )
+    if abs(actual_km - platform_km) > tolerance_km:
+        raise RouteDistanceMismatch(
+            f"{label}地图里程与平台不一致：平台 {platform_km:.1f}km，"
+            f"地图 {actual_km:.1f}km"
+        )
 
 
 def number_or_none(value: Any) -> float | None:

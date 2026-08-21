@@ -10,7 +10,13 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from urllib.parse import parse_qs, urlparse
 
-from server.amap import AmapClient, AmapOrderEnricher, Point
+from server.amap import (
+    AmapClient,
+    AmapOrderEnricher,
+    Point,
+    RouteDistanceMismatch,
+    validate_route_distance,
+)
 
 from server.server import (
     CancellationRegistry,
@@ -44,6 +50,15 @@ def signed_headers(path: str, body: bytes, request_id: str) -> dict[str, str]:
 
 
 class ServerTest(unittest.TestCase):
+    def test_route_distance_audit_allows_real_long_trip_but_rejects_scale_error(self) -> None:
+        validate_route_distance("行程", actual_km=480.0, platform_km=500.0)
+        validate_route_distance("接驾", actual_km=7.0, platform_km=2.0)
+
+        with self.assertRaises(RouteDistanceMismatch):
+            validate_route_distance("接驾", actual_km=274.9, platform_km=2.0)
+        with self.assertRaises(RouteDistanceMismatch):
+            validate_route_distance("行程", actual_km=297.4, platform_km=34.3)
+
     def test_load_env_supports_comments_and_quotes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".env"
@@ -281,6 +296,23 @@ class ServerTest(unittest.TestCase):
                         "adcode": "440305",
                     }],
                 }
+            if parsed.path.endswith("/place/around"):
+                keyword = query["keywords"][0]
+                is_pickup = keyword == "科技园"
+                return {
+                    "status": "1",
+                    "pois": [{
+                        "id": "pickup-poi" if is_pickup else "destination-poi",
+                        "name": keyword,
+                        "location": (
+                            "113.950000,22.540000"
+                            if is_pickup
+                            else "113.960000,22.550000"
+                        ),
+                        "distance": "1200" if is_pickup else "6300",
+                        "adcode": "440305",
+                    }],
+                }
             if parsed.path.endswith("/direction/driving"):
                 is_pickup = query["destination"][0] == "113.950000,22.540000"
                 self.assertEqual(["cost,tmcs"], query["show_fields"])
@@ -342,6 +374,80 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(4.2, order["trip_route_toll_distance_km"])
         self.assertEqual("南坪快速", order["trip_route_toll_road"])
         self.assertEqual(1, metadata["amap_routed_orders"])
+
+    def test_amap_rejects_cross_city_match_that_conflicts_with_platform_distance(self) -> None:
+        search_keywords = []
+
+        def fake_transport(url: str):
+            parsed = urlparse(url)
+            query = parse_qs(parsed.query)
+            if parsed.path.endswith("/coordinate/convert"):
+                return {"status": "1", "locations": "113.900000,22.550000"}
+            if parsed.path.endswith("/place/around"):
+                keyword = query["keywords"][0]
+                search_keywords.append(keyword)
+                if keyword == "柏林建材-兴华一路":
+                    return {"status": "1", "pois": []}
+                if keyword == "柏林建材":
+                    return {
+                        "status": "1",
+                        "pois": [{
+                            "id": "wrong-pickup",
+                            "name": "广东省云浮市罗定市兴华一路",
+                            "location": "111.570000,22.770000",
+                            "distance": "274000",
+                            "adcode": "445381",
+                        }],
+                    }
+                return {
+                    "status": "1",
+                    "pois": [{
+                        "id": "destination",
+                        "name": "广东省深圳市龙岗区乐荟中心",
+                        "location": "114.250000,22.720000",
+                        "distance": "297000",
+                        "adcode": "440307",
+                    }],
+                }
+            if parsed.path.endswith("/direction/driving"):
+                is_pickup = query["destination"][0] == "111.570000,22.770000"
+                return {
+                    "status": "1",
+                    "route": {"paths": [{
+                        "distance": "274900" if is_pickup else "297400",
+                        "cost": {"duration": "11940" if is_pickup else "15660"},
+                        "steps": [],
+                    }]},
+                }
+            raise AssertionError(url)
+
+        enricher = AmapOrderEnricher(AmapClient("test-key", transport=fake_transport))
+        result, metadata = enricher.enrich(
+            {"orders": [{
+                "is_fully_visible": True,
+                "occluded_fields": [],
+                "price": 38.33,
+                "pickup_distance_km": 2.0,
+                "trip_distance_km": 34.3,
+                "pickup_name": "柏林建材-兴华一路",
+                "pickup_name_normalized": "柏林建材-兴华一路",
+                "destination_name": "乐荟中心乐糖公寓2栋",
+                "destination_name_normalized": "乐荟中心乐糖公寓2栋",
+            }]},
+            Point(113.89, 22.54),
+        )
+
+        order = result["orders"][0]
+        self.assertEqual("route_mismatch", order["route_status"])
+        self.assertIn("平台 2.0km，地图 274.9km", order["route_error"])
+        self.assertEqual("广东省云浮市罗定市兴华一路", order["pickup_match_name"])
+        self.assertEqual(274.9, order["pickup_route_distance_km"])
+        self.assertNotIn("effective_hourly_income", order)
+        self.assertEqual(0, metadata["amap_routed_orders"])
+        self.assertEqual(
+            ["柏林建材-兴华一路", "柏林建材"],
+            search_keywords,
+        )
 
     def test_amap_retries_account_qps_error(self) -> None:
         responses = [

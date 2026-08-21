@@ -547,7 +547,9 @@ class _OrderRow extends StatelessWidget {
               Text(
                 order.routeStatus == 'ok'
                     ? '路线估算：接驾 $pickupRoute 分/$pickupRouteKm km + 等客 $waiting 分 + 行程 $tripRoute 分/$tripRouteKm km'
-                    : '地图暂时无法计算路线',
+                    : order.routeStatus == 'route_mismatch'
+                        ? '地图地点匹配异常，已停止路线评价'
+                        : '地图暂时无法计算路线',
                 style: const TextStyle(color: _muted, fontSize: 11),
               ),
               if (order.routeStatus == 'ok' && trafficDetails.isNotEmpty) ...[
@@ -582,7 +584,11 @@ class _OrderRow extends StatelessWidget {
         ),
         const SizedBox(width: 8),
         Text(
-          order.routeStatus == 'ok' ? '¥$hourly/小时' : '待算路',
+          order.routeStatus == 'ok'
+              ? '¥$hourly/小时'
+              : order.routeStatus == 'route_mismatch'
+                  ? '匹配异常'
+                  : '待算路',
           style: const TextStyle(
             color: _orange,
             fontWeight: FontWeight.w900,

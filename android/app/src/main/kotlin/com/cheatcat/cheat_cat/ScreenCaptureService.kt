@@ -329,26 +329,46 @@ class ScreenCaptureService : Service() {
                         val analysis = result.analysis
                         val best = analysis.bestOrder
                         if (best == null) {
-                            val message = if (analysis.orders.isEmpty()) {
-                                "没有发现可分析的订单"
-                            } else {
-                                "发现 ${analysis.orders.size} 张订单卡片，但关键信息显示不完整"
+                            val completeOrders = analysis.completeOrders
+                            val completeCount = completeOrders.size
+                            val hasRouteMismatch = completeOrders.any {
+                                it.routeStatus == "route_mismatch"
+                            }
+                            val message = when {
+                                analysis.orders.isEmpty() -> "没有发现可分析的订单"
+                                completeCount == 0 ->
+                                    "发现 ${analysis.orders.size} 张订单卡片，但关键信息显示不完整"
+                                hasRouteMismatch ->
+                                    "识别到 $completeCount 个完整订单，但存在地图地点匹配异常，已停止推荐"
+                                else -> "识别到 $completeCount 个完整订单，但地图路线暂不可用"
                             }
                             AnalyzerEventBus.emit(
-                                mapOf("status" to "scanning", "message" to message),
+                                if (completeCount > 0) {
+                                    analysis.toEvent(message)
+                                } else {
+                                    mapOf("status" to "scanning", "message" to message)
+                                },
                             )
                             updateStatus(
-                                if (analysis.orders.isEmpty()) {
-                                    "未发现订单"
-                                } else {
-                                    "看到 ${analysis.orders.size} 张 · 无完整单"
+                                when {
+                                    analysis.orders.isEmpty() -> "未发现订单"
+                                    completeCount == 0 ->
+                                        "看到 ${analysis.orders.size} 张 · 无完整单"
+                                    hasRouteMismatch ->
+                                        "已识别 $completeCount 单 · 地图匹配异常"
+                                    else -> "已识别 $completeCount 单 · 路线不可用"
                                 },
                             )
                         } else {
                             val count = analysis.completeOrders.size
-                            val message = "本次发现 $count 个完整订单，已按预计毛时薪排序"
+                            val routedCount = analysis.rankedRoutableOrders.size
+                            val message = if (routedCount == count) {
+                                "本次发现 $count 个完整订单，已按预计毛时薪排序"
+                            } else {
+                                "本次发现 $count 个完整订单，其中 $routedCount 个地图路线可信"
+                            }
                             AnalyzerEventBus.emit(analysis.toEvent(message))
-                            updateStatus("已识别 $count 单 · 已标注")
+                            updateStatus("已识别 $count 单 · 已标注 $routedCount 单")
                             showOrderHighlights(analysis, frameSignature)
                         }
                     }
@@ -432,7 +452,7 @@ class ScreenCaptureService : Service() {
         baselineSignature: ByteArray,
     ) {
         val overlay = highlightOverlay ?: return
-        val specs = analysis.rankedCompleteOrders.take(3).mapIndexedNotNull { index, order ->
+        val specs = analysis.rankedRoutableOrders.take(3).mapIndexedNotNull { index, order ->
             val box = order.boundingBox ?: return@mapIndexedNotNull null
             val label = OrderHighlightLabelFormatter.format(order, index)
             OrderHighlightSpec(box = box, label = label, rank = index)
